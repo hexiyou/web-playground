@@ -1,7 +1,9 @@
 /**
  * 浏览器层拆线负例：把 iframe bridge 的消息回传从 parent.postMessage 改成 self.postMessage，
- * 预览页的输出/快照/done 就到不了主页面。期望 iframe 链的 10 条判据精确红，
+ * 预览页的输出/快照/done 就到不了主页面。期望 iframe 链的 12 条判据精确红，
  * Worker 链与全局判据全绿 —— 证明 ?selftest=1 不是「怎么改都全绿」的假判据。
+ * 其中 sample/css、sample/html 也必须红：默认示例收不到 done 会超时，
+ * 它们同样押「能跑完」，不是只押输出字节。
  *
  * 判据不靠数汇总数字：直接读落盘的完整 JSON，比对红的 id 集合；通过数押
  * 「总数 - 红数 - 跳过数」的相对关系，新增语言时这条负例不会跟着漂移。
@@ -18,7 +20,7 @@ const reportFile = join(root, '.smoke-negative-report.json');
 const NEEDLE = 'parent.postMessage(Object.assign(';
 const BROKEN = 'self.postMessage(Object.assign(';
 
-/** 这 10 条都押「iframe 里的可观察副作用真的能回传」。 */
+/** 这 12 条都押「iframe 里的可观察副作用 / 完成信号真的能回传」。 */
 const EXPECTED_RED = [
   'css/cascade',
   'css/computed',
@@ -30,6 +32,8 @@ const EXPECTED_RED = [
   'html/page-text',
   'html/script-error',
   'html/utf8',
+  'sample/css',
+  'sample/html',
 ].sort();
 
 const EXPECTED_SKIPS = ['css/infinite-loop', 'html/infinite-loop'].sort();

@@ -1,6 +1,6 @@
 {
   "name": "team-playground",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "浏览器端代码片段快速验证 playground · 契约先行，服务端执行可插拔",
@@ -18,6 +18,7 @@
     "smoke:negative": "node scripts/smoke-negative.mjs",
     "smoke:negative:lua": "node scripts/smoke-lua-negative.mjs",
     "smoke:negative:sql": "node scripts/smoke-sql-negative.mjs",
+    "smoke:negative:sample": "node scripts/smoke-sample-negative.mjs",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

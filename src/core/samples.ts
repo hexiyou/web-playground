@@ -127,7 +127,8 @@ FROM orders
 GROUP BY city
 ORDER BY total DESC;
 
-SELECT sqlite_version() AS sqlite, '中文标记' AS label, NULL AS nothing;
+-- 别名撞上 SQLite 关键字（NOTHING / DO / KEY…）必须加引号，否则 prepare 阶段就报语法错误。
+SELECT sqlite_version() AS sqlite, '中文标记' AS label, NULL AS "nothing";
 
 -- 同一次运行内多语句共享同一个 DB；再加一个 .sql 文件会作为初始化脚本先执行。
 -- 结果集逐行读回，输出字节 / 行数触顶即停；无限递归 CTE 靠 Worker terminate 真杀。

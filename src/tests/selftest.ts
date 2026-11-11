@@ -11,6 +11,7 @@ import type { BrowserSandbox, LangId, RunLimits, RunRequest, RunResult } from '.
 import { deriveCapabilities, validateWiring } from '../core/capabilities';
 import { execute } from '../core/execute';
 import type { RunnerRegistry } from '../core/registry';
+import { SAMPLES } from '../core/samples';
 import { isSelfHostedWasm } from '../runners/browser/lua-shared';
 
 export type AssertionStatus = 'pass' | 'fail' | 'skip';
@@ -349,6 +350,24 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     pass('sql/no-memory-cap', 'sql', '没有 allocator 上限就不谎报内存用量',
       (r.probes?.memoryCapability ?? '').includes('no-allocator-cap') && r.usage?.memoryBytes === undefined,
       `memoryCapability=${r.probes?.memoryCapability ?? ''} usageMemory=${String(r.usage?.memoryBytes)}`);
+  }
+
+  // ---------- 默认示例：用户打开页面点「运行」看到的第一份代码 ----------
+  // 上面每门语言的判据都用自检自己造的干净输入，天生抓不到「SAMPLES 里那份示例
+  // 本身写错了」。v0.3 就踩过：SQL 示例拿 SQLite 保留字 NOTHING 当列别名，
+  // 51 绿一条没红，用户一点运行就 syntax error。这里直接跑 SAMPLES 原文，
+  // 押「能跑完且没有 error 级诊断」，不押输出字节（免得与 stdout 拆线负例耦合）。
+  for (const lang of Object.keys(SAMPLES) as LangId[]) {
+    const sample = SAMPLES[lang];
+    const r = await run(lang, sample.files[0].content, { files: sample.files });
+    const errors = r.diagnostics.filter((d) => d.level === 'error');
+    pass(
+      `sample/${lang}`,
+      lang,
+      '默认示例可直接运行',
+      r.status === 'ok' && errors.length === 0,
+      `status=${r.status} error=${errors.map((d) => d.message).join(' | ') || '无'}`,
+    );
   }
 
   // ---------- 门控自检：跳过必须精确等于白名单 ----------

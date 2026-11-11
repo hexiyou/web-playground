@@ -8,5 +8,6 @@ dist/
 .smoke-negative-report.json
 .smoke-lua-report.json
 .smoke-sql-report.json
+.smoke-sample-report.json
 *.log
 .DS_Store
