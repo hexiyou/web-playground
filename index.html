@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playground · 团队代码片段验证</title>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>Playground <span class="ver">v0.1</span></h1>
+      <div class="sub">团队内部 · 免环境验证代码片段 · 首版仅浏览器原生语言</div>
+    </div>
+    <nav>
+      <a href="/playground-architecture-analysis.html" target="_blank" rel="noopener">架构分析手册</a>
+      <a href="?selftest=1">运行自检</a>
+    </nav>
+  </header>
+
+  <div class="toolbar">
+    <label>语言 <select id="lang"></select></label>
+    <label>载体 <select id="sandbox"></select></label>
+    <label>位置 <select id="target">
+      <option value="">按能力表</option>
+      <option value="browser">browser</option>
+      <option value="server">server</option>
+    </select></label>
+    <label>超时 <input id="wall" type="number" value="3000" min="100" step="100"> ms</label>
+    <button id="run" class="primary">运行 <kbd>Ctrl</kbd>+<kbd>Enter</kbd></button>
+    <button id="cancel" disabled>停止</button>
+    <span id="status" class="status">就绪</span>
+  </div>
+  <div id="hint" class="hint"></div>
+
+  <main class="panes">
+    <section class="pane">
+      <div class="pane-title">代码 <span id="file-name" class="muted"></span></div>
+      <div id="editor" class="editor"></div>
+    </section>
+    <section class="pane">
+      <div class="pane-title">输出 <span id="meta" class="muted"></span></div>
+      <div id="output" class="output"><div class="empty">点「运行」看结果。console.log 会回传到这里。</div></div>
+      <div class="pane-title">预览 <span class="muted">sandbox iframe · 不给 allow-same-origin</span></div>
+      <div id="preview" class="preview"><div class="empty">HTML / CSS，或 JS 切到 iframe 载体时在这里渲染。</div></div>
+    </section>
+  </main>
+
+  <section class="truth">
+    <div class="pane-title">接线真值 <span class="muted">能力表由 runner 注册表推导，不手写</span></div>
+    <table id="caps">
+      <thead><tr><th>语言</th><th>已接线 runner</th><th>可用位置</th><th>默认</th><th>离线</th><th>可判分</th><th>状态</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="wiring" class="wiring"></div>
+  </section>
+
+  <details class="about">
+    <summary>契约与后期迁移说明（点开）</summary>
+    <div class="about-body">
+      <p><b>首版范围</b>：JavaScript / TypeScript / HTML / CSS 四门，全部在浏览器里跑。JS/TS 默认走 Worker（<code>worker.terminate()</code> 能真杀无限循环），HTML/CSS 走 <code>sandbox="allow-scripts"</code> 的 iframe。TypeScript 用官方 <code>transpileModule</code> 动态加载转译，只做语法转换。</p>
+      <p><b>契约先行</b>：<code>RunRequest</code> 已含 <code>target: browser | server</code>、<code>limits</code>（wall/cpu/memory/output）、<code>files[]</code>、<code>stdin</code>；<code>RunResult</code> 已含 <code>exitCode: number | null</code>（浏览器没有退出码，不假装 0）、<code>usage</code>、<code>probes</code>、<code>preview</code>。能力表 <code>Capability</code> 由注册表 <code>active()</code> 推导 —— 没接线就置灰，单测骗不过去。</p>
+      <p><b>迁移到服务端</b>：<code>src/runners/server/piston.ts</code> 已实现 <code>Runner</code> 接口、<code>buildPistonBody()</code>（显式传内存限额，不吃 Piston 默认的 -1）与 <code>mapPistonResponse()</code>（RE/SG/TO/OL/EL/XX 六种状态映射），默认 <code>enabled: false</code> 且<b>不注册</b>。启用只需在 <code>createRegistry()</code> 传 <code>ServerWiring</code>，UI 一行不用改；能力表会自动出现 <code>server</code> 位置与「可判分」。</p>
+      <p><b>已知边界</b>：iframe 内同步死循环会冻结标签页（浏览器限制，不是实现缺陷），因此该模式的超时判据不做自动验证；JS/TS 请用 Worker 载体。首版不支持模块 import/export。预览 iframe 是 opaque origin，<code>event.origin === 'null'</code> 证明不了任何事，代码里靠 <code>event.source</code> + <code>requestId</code> 双重校验。</p>
+      <p><b>验收</b>：<code>npm run verify</code>（类型检查 + 单测 + 构建，32 条单测全绿）；<code>npm run smoke</code> 用本机 Chromium + CDP 打开 <code>?selftest=1</code> 跑真浏览器端到端判据（26 条：24 绿 / 2 条按白名单记账跳过）；<code>npm run negative</code> 改坏 CSS 接线精确红 1 条，<code>npm run smoke:negative</code> 掐断 iframe 消息回传精确红 10 条 —— 两层负例都证明判据不是「怎么改都全绿」。</p>
+      <p><b>体积基线</b>：首屏入口 gzip <b>10.08 KB</b>；CodeMirror 与各语言包、TypeScript 编译器（3.59 MB / gzip 1.03 MB）全部是独立动态 import chunk，不进首屏。后续每加一门 WASM 语言，先量首屏与 gzip 增量再合并。</p>
+    </div>
+  </details>
+
+  <div id="selftest" class="selftest" hidden></div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

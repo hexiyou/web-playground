@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浏览器端多语言 Playground · 架构与依赖成本分析</title>
+<style>
+  :root{
+    --bg:#ffffff; --surface:#f7f7f5; --ink:#1c1c1a; --muted:#5f5e5a; --faint:#888780;
+    --line:#e3e1da; --blue:#185fa5; --blue-bg:#e6f1fb; --teal:#0f6e56; --teal-bg:#e1f5ee;
+    --amber:#854f0b; --amber-bg:#faeeda; --red:#a32d2d; --red-bg:#fcebeb; --purple:#534ab7; --purple-bg:#eeedfe;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 28px 100px}
+  header{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:32px}
+  h1{font-size:26px;font-weight:600;margin:0 0 8px;letter-spacing:-.3px}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:20px;font-weight:600;margin:48px 0 14px;padding-top:10px;border-top:1px solid var(--line)}
+  h3{font-size:16px;font-weight:600;margin:26px 0 8px}
+  p{margin:10px 0}
+  code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+  code{background:var(--surface);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  pre{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:14px 0}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+  .scroll table{margin:0;min-width:900px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--surface);font-weight:600;color:var(--muted);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .t-a{background:var(--teal-bg);color:var(--teal)} .t-b{background:var(--blue-bg);color:var(--blue)}
+  .t-c{background:var(--amber-bg);color:var(--amber)} .t-d{background:var(--red-bg);color:var(--red)}
+  .t-e{background:var(--purple-bg);color:var(--purple)} .t-g{background:var(--surface);color:var(--muted)}
+  .callout{background:var(--surface);border-left:3px solid var(--blue);border-radius:0 8px 8px 0;padding:12px 16px;margin:18px 0}
+  .warn{border-left-color:var(--red);background:var(--red-bg)}
+  .ok{border-left-color:var(--teal);background:var(--teal-bg)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--bg)}
+  .card b{display:block;font-size:13px;margin-bottom:4px}
+  .card span{font-size:12.5px;color:var(--muted);line-height:1.6}
+  .num{font-size:22px;font-weight:600;letter-spacing:-.5px;color:var(--ink);display:block;margin:2px 0 4px}
+  ul,ol{padding-left:22px;margin:10px 0} li{margin:6px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .k{color:var(--red);font-weight:600}
+  .toc{columns:2;column-gap:32px;font-size:13px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .foot{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-size:12.5px;color:var(--faint)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>浏览器端多语言 Playground · 架构与依赖成本分析</h1>
+  <div class="sub">何工 · 2026-11-11 · 数据口径：npm registry 实测 + 官方文档 + 公开实测，三种体积口径分开记账</div>
+</header>
+
+<div class="callout">
+  <b>一句话结论</b><br>
+  最佳实践不是「选一个运行时把所有语言塞进浏览器」，而是<b>一套统一的 Runner 契约 + 一张能力表（CapFlag）+ 三类可插拔执行后端</b>：能在浏览器里跑的（JS/TS、Python、Lua、SQL、Ruby、PHP、R、C/C++/Go 编译链）走本地 WASM，跑不了的（Rust、C#、Kotlin、Swift、Bash、原生依赖、真实网络/数据库、需要可信判分）走服务端沙箱。前端只负责编辑、调度、输出呈现，<b>永远不要为某门语言在主流程里开特例</b>。<br>
+  <span class="small">2026-11-11 补：<b>第十一章</b>回答「能否只留 A + 服务端」——答案是 B/C 可以全砍、A 不能砍，且服务端沙箱要按三档隔离重新选型。</span>
+</div>
+
+<div class="toc">
+  <a href="#s1">一、三种体积口径（最容易算错的地方）</a><br>
+  <a href="#s2">二、推荐架构：统一契约 + 三层后端</a><br>
+  <a href="#s3">三、语言支持全景（四档）</a><br>
+  <a href="#s4">四、逐语言依赖配置与资源账</a><br>
+  <a href="#s5">五、实测体积表（npm registry）</a><br>
+  <a href="#s6">六、运行时资源占用</a><br>
+  <a href="#s7">七、部署与安全硬约束</a><br>
+  <a href="#s8">八、落地顺序与验收判据</a><br>
+  <a href="#s9">九、坑清单</a><br>
+  <a href="#s10">十、数据来源与口径声明</a><br>
+  <a href="#s11">十一、专题：能否只留「A 原生 + 服务端」</a>
+</div>
+
+<h2 id="s1">一、三种体积口径（最容易算错的地方）</h2>
+<p>网上「Pyodide 200MB」「DuckDB 142MB」「WebContainer 0.17MB」这类互相矛盾的数字，几乎全是<b>口径混用</b>。做预算前必须先把三者分开：</p>
+<div class="grid">
+  <div class="card"><b>① npm 解包体积</b><span class="num">unpackedSize</span><span>包装进 <code>node_modules</code> 的字节数。含多平台构建、测试、source map、示例，通常远大于实际下载量。</span></div>
+  <div class="card"><b>② 首次 HTTP 传输</b><span class="num">gzip / brotli</span><span>用户第一次点这门语言真正下载的字节。wasm 压缩率高（约 2.6:1），已经是 zip 的标准库压不动。<b>预算按这个算。</b></span></div>
+  <div class="card"><b>③ 常驻 / 峰值内存</b><span class="num">RSS</span><span>运行时实例化后的线性内存 + JS 堆。<b>WASM 编译期峰值另算</b>，可比常驻高一个数量级。</span></div>
+</div>
+<div class="callout warn">
+  <b>三个典型反例（都实测过）</b>
+  <ul>
+    <li><code>@webcontainer/api</code> 解包仅 <b>0.17 MB</b>，但那只是 JS SDK；真正的 Node 运行时从 CDN 首次拉约 <b>20 MB</b>。</li>
+    <li><code>@duckdb/duckdb-wasm</code> 解包 <b>142.46 MB</b>（内含 mvp / eh 两套各约 35–40 MB 的 wasm），浏览器按能力只加载其中一套，实际约 <b>2.8 MB gzip</b>。</li>
+    <li><code>pyodide</code> npm 包解包 <b>13.24 MB</b>，官方 full 发行包 <b>200+ MB</b>（含全部预编译 wheel），而最小 core 首次传输实测约 <b>6.44 MB</b>。</li>
+  </ul>
+  另：1024 与 1000 口径差 2.4%，跨来源对比前先统一。本文一律 1024（MB = 1 048 576 B）。
+</div>
+
+<h2 id="s2">二、推荐架构：统一契约 + 三层后端</h2>
+<p>一个 playground 其实是「一个编译器 + 一个沙箱，外面套了个编辑器」。编辑器是最便宜的一层，真正的设计在下面这层契约：</p>
+<pre>type Cap = 'stdin' | 'stdoutStream' | 'stderrStream' | 'exitCode' | 'interrupt'
+         | 'packages' | 'files' | 'network' | 'threads' | 'graphics'
+         | 'persist' | 'multiFile' | 'offline' | 'trustedGrading';
+
+interface Runner {
+  id: string;                      // 'browser-wasm' | 'browser-native' | 'remote-piston'
+  lang: string;
+  caps: Record&lt;Cap, 'native' | 'emulated' | 'unsupported'&gt;;   // 能力表：单一真值
+  supports(c: Cap): boolean;        // UI 渲染前必过这一关
+  run(req: RunRequest): AsyncIterable&lt;RunChunk&gt;;               // 流式输出
+  abort(): void;                    // 必须能杀掉，不允许"未知"
+}
+
+type RunRequest = { language: string; files: File[]; stdin: string;
+                    args: string[]; timeoutMs: number };
+type RunChunk   = { stream: 'stdout' | 'stderr' | 'status'; text: string };
+type RunResult  = { stdout: string; stderr: string; exitCode: number | null;
+                    durationMs: number; timedOut: boolean; backend: string };</pre>
+<p><b>能力表是地基，不是文档。</b>三档语义：<code>native</code> 真支持 / <code>emulated</code> 能跑但语义有偏差（必须给用户看提示）/ <code>unsupported</code> 置灰且写明理由。UI 的「安装依赖」「上传文件」「启用网络」「停止」按钮全部由 <code>supports()</code> 驱动，不许在组件里写 <code>if (lang === 'python')</code>。这套做法和你 kite 项目里的 56 个 CapFlag 是同一个道理，只是这里的能力缺口更硬——浏览器里缺的是 OS，不是产品决策。</p>
+
+<h3>三类执行后端</h3>
+<table>
+<thead><tr><th>后端</th><th>覆盖语言</th><th>隔离方式</th><th>首次成本</th><th>关键硬边界</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-a">B0 浏览器原生</span></td><td>JS / TS / JSX / HTML / CSS</td><td>独立可注册域 + <code>sandbox="allow-scripts"</code> 的 iframe；或 Web Worker</td><td>0.3–1 MB（Sucrase）～9 MB（esbuild-wasm）</td><td>只有浏览器 API，无 Node 内建；贴图/预览需要 iframe，纯计算用 Worker</td></tr>
+<tr><td><span class="tag t-b">B1 浏览器 WASM 运行时</span></td><td>Python / Lua / SQL / Ruby / PHP / R / Java（CheerpJ，商用授权）</td><td>每语言一个专属 Worker + WASM 线性内存</td><td>0.4 MB（Lua）～30 MB（R/PHP）</td><td>无 socket、无 fork/进程、无原生扩展、无真实文件系统；包生态要专门移植</td></tr>
+<tr><td><span class="tag t-c">B2 浏览器 WASM 编译链</span></td><td>C / C++ / Go</td><td>WASI shim + 内存 FS，编译产物再用 WASM 跑</td><td>约 23 MB 压缩 / 100 MB 解包</td><td>编译慢、常驻几百 MB；异常/线程/std 子集语义有偏差</td></tr>
+<tr><td><span class="tag t-d">B3 远端沙箱</span></td><td>Rust / C# / Java / Kotlin / Swift / Bash / Perl 及任何需要原生依赖、网络、数据库、可信判分的场景</td><td>Isolate（Piston/Judge0）或 Firecracker microVM</td><td>客户端 0；服务端每任务</td><td>需要服务器、限流、排队、出网策略；结果可信</td></tr>
+</tbody>
+</table>
+<p><b>路由策略</b>：能力表 → 环境探测（<code>crossOriginIsolated</code>、<code>navigator.deviceMemory</code>、缓存命中、网络）→ 选后端 + fallback。同一门语言允许挂多个后端（Python 默认 Pyodide，移动端或内存不足自动降级到 B3），这样「支持 15 种语言」不会因为某一门体积过大拖垮首屏。</p>
+
+<h2 id="s3">三、语言支持全景（四档）</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>档位</th><th>语言</th><th>浏览器可行性</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-a">A 原生可跑</span></td><td>JavaScript、TypeScript、JSX/TSX、HTML、CSS、JSON、Vue/Svelte SFC</td><td>完整</td><td>转译在 Worker，执行在沙箱 iframe；唯一能拿到 DOM / Canvas / WebGL 的一档</td></tr>
+<tr><td><span class="tag t-b">B WASM 解释器 / 运行时</span></td><td>Python、Lua、SQLite / PostgreSQL / DuckDB（SQL）、Ruby、PHP、R、Java（CheerpJ）、C#（仅预编译 DLL）、MicroPython、Prolog、jq</td><td>基本完整，语义有缺口</td><td>真解释器不是转译器；每门语言一份独立资产，成本随语言数线性叠加</td></tr>
+<tr><td><span class="tag t-c">C WASM 编译链</span></td><td>C、C++、Go、Objective-C（残缺）</td><td>可行但重</td><td>编译器本身编成 WASM；需要 WASI shim、sysroot、预编译头/标准库归档</td></tr>
+<tr><td><span class="tag t-d">D 必须服务端</span></td><td>Rust、C#（源码级）、Kotlin、Scala、Swift、Dart、Julia、Perl、Bash、Fortran、Haskell、汇编，以及任何需要原生扩展 / 真实网络 / 数据库 / 判分的场景</td><td>不可行或不实用</td><td>rustc 带 LLVM 无法实用地塞进浏览器；Blazor 是「运行时 + 预编译 DLL」而非源码编译器</td></tr>
+<tr><td><span class="tag t-e">E Node 生态特例</span></td><td>Node.js / npm / Vite / Next（WebContainers 或 Sandpack）</td><td>可行，但只此一生态</td><td>需要 COOP/COEP + 商用授权；<b>不能</b>拿它跑 Python / Go / Rust</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout">
+  <b>常见误判</b>：把 WebContainers 当成「多语言方案」。它是把 <b>Node 生态</b>搬进标签页的微 OS，能力极强但形状固定；Java 的 TeaVM / Kotlin Wasm 是<b>提前把字节码编译掉</b>，不是让用户在输入框写 Java 源码再编译。区分「能运行这门语言的产物」和「能执行用户输入的源码」，是选型的分水岭。
+</div>
+
+<h2 id="s4">四、逐语言依赖配置与资源账</h2>
+
+<h3>1. JavaScript / TypeScript / HTML / CSS <span class="tag t-a">B0</span></h3>
+<table>
+<thead><tr><th>项</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>依赖</td><td><code>sucrase</code>（1.08 MB 解包，gzip 约 275 KB）做单文件 TS/JSX 转译；需要模块解析/多文件打包再上 <code>esbuild-wasm</code>（13.86 MB 解包，wasm 本体约 9 MB）；编辑器 <code>CodeMirror 6</code>（core 约 150 KB）或 <code>monaco-editor</code>（约 1.5 MB gzip / 5 MB+ minified）</td></tr>
+<tr><td>配置</td><td><code>esbuild.initialize({ wasmURL, worker: true })</code>；<code>new Worker(new URL('./runner.ts', import.meta.url), {type:'module'})</code>；import map 或自定义 resolver 处理裸导入；产物以 Blob URL 注入沙箱 iframe</td></tr>
+<tr><td>传输 / 内存</td><td>0.3–1 MB（Sucrase 路线）或约 9 MB（esbuild 路线）；常驻 50–150 MB；WASM 初始化 1–2 s（一次性）</td></tr>
+<tr><td>能力缺口</td><td>无 <code>fs/path/http</code> 等 Node 内建；无 <code>require</code>；<code>eval</code>/<code>new Function</code> 与严格 CSP 冲突，只能在沙箱里放开 <code>'unsafe-eval'</code></td></tr>
+</tbody>
+</table>
+<p class="small">转译器横评（解包/体积口径）：Sucrase 275 KB &lt; Babel Standalone 2.8 MB &lt; typescript.js 约 5 MB &lt; esbuild-wasm 8–9 MB &lt; @swc/wasm-web 约 19 MB。只要 JSX/TS 不需要打包，Sucrase 能省下约 30 倍体积。</p>
+
+<h3>2. Python <span class="tag t-b">B1</span></h3>
+<table>
+<thead><tr><th>项</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>依赖</td><td><code>pyodide@314.0.7</code>（npm core，解包 13.24 MB）；CDN 为 <code>https://cdn.jsdelivr.net/pyodide/v314.0.7/full/</code>；自托管需同时提供 <code>pyodide.asm.wasm</code>、<code>pyodide.asm.mjs</code>、<code>python_stdlib.zip</code>、<code>pyodide-lock.json</code>、<code>pyodide.mjs</code></td></tr>
+<tr><td>版本口径</td><td>2026-06-09 起 Pyodide 改版本号方案：<b>314.x 对应 CPython 3.14</b>，314.0.7 内含 CPython 3.14.2。0.29.x / 0.28.x 是旧编号。网上 0.26/0.27 时代的体积与性能结论已过时</td></tr>
+<tr><td>配置</td><td><code>loadPyodide({ indexURL })</code> → Worker 内 <code>setStdout/setStderr</code> → <code>loadPackagesFromImports(code)</code> 自动扫 import → <code>runPythonAsync</code>；纯 Python 包走 <code>micropip.install()</code>，C 扩展必须用 Pyodide 预编译的 wasm wheel</td></tr>
+<tr><td>传输</td><td>core 首次实测约 <b>6.44 MB / 27 请求 / 2.1–2.4 s 可运行</b>；其中 wasm 原始 9.6 MB → gzip 3.60 MB，<code>python_stdlib.zip</code> 2.55 MB（已压缩，压不动）；二次访问约 <b>2 KB</b>（<code>Cache-Control: public, max-age=0</code> + ETag 全命中）。NumPy 约 +6 MB、pandas 约 +12 MB（压缩后，第三方口径）</td></tr>
+<tr><td>内存</td><td>运行期数十～数百 MB（科学栈）；<b>WASM 编译期峰值 3–4 GB</b>（公开 WSL2 实测），移动端/低内存设备会直接 OOM</td></tr>
+<tr><td>能力缺口</td><td><code>threading</code>/<code>multiprocessing</code>/原始 socket/tkinter/curses 不可用或导入即废；<code>requests</code> 走浏览器 Web API 且受 CORS；<code>open()</code> 打的是虚拟 FS。中断需要 <code>setInterruptBuffer()</code> + SharedArrayBuffer ⇒ <b>又要 COOP/COEP</b>；否则只能 <code>worker.terminate()</code></td></tr>
+<tr><td>授权</td><td>MPL-2.0 系（Pyodide 主项目），可自托管</td></tr>
+</tbody>
+</table>
+
+<h3>3. Lua <span class="tag t-b">B1</span></h3>
+<p><code>wasmoon@1.16.0</code> 解包仅 <b>0.44 MB</b>，是真 Lua 5.4（表、元表、协程齐全），性价比最高的一门语言。<code>fengari@0.1.5</code> 是纯 JS 实现（Lua 5.3，1.56 MB，无 wasm），适合不想引 WASM 的场景。依赖配置只需 <code>new LuaFactory()</code> + <code>createEngine()</code>，把 <code>print</code> 重定向到输出通道。<b>建议拿它做「多语言」的第一个接入样板</b>：体积几乎为零，能把契约、懒加载、超时、缓存链路全部跑通。</p>
+
+<h3>4. SQL 家族 <span class="tag t-b">B1</span></h3>
+<div class="scroll">
+<table>
+<thead><tr><th>引擎</th><th>npm 解包</th><th>实际传输</th><th>配置要点</th><th>取舍</th></tr></thead>
+<tbody>
+<tr><td><code>sql.js</code> 1.16.0</td><td>29.82 MB</td><td>wasm 约 1 MB / 约 400 KB gzip</td><td><code>initSqlJs({ locateFile })</code>；纯内存，持久化要手动 <code>db.export()</code> 存 IndexedDB</td><td>最轻、冷启 50–200 ms；SQLite 方言</td></tr>
+<tr><td><code>@electric-sql/pglite</code> 0.5.16</td><td>25.11 MB</td><td>约 3 MB gzip</td><td><code>new PGlite('idb://...')</code>；<code>SELECT 1</code> 预热；单写者单标签，多标签要 leader election</td><td>真 PostgreSQL 语义（JSONB / 窗口函数 / pgvector）；冷启 0.5–2 s</td></tr>
+<tr><td><code>@duckdb/duckdb-wasm</code></td><td>142.46 MB</td><td>约 2.8 MB gzip（只加载一套 wasm）</td><td>按浏览器能力选 <code>mvp</code>/<code>eh</code> bundle；读 Parquet/CSV/Arrow</td><td>OLAP 聚合快一个量级；Transactional 写入弱</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small">注意：固定体积不代表固定下载量，DuckDB 与 sql.js 的包里都塞了多套构建。<code>locateFile</code> 类回调必须做成运行时可配置，否则内网/离线交付要重新打包。</p>
+
+<h3>5. Ruby / PHP / R / Java <span class="tag t-b">B1</span></h3>
+<div class="scroll">
+<table>
+<thead><tr><th>语言</th><th>依赖</th><th>体积</th><th>配置与坑</th><th>授权</th></tr></thead>
+<tbody>
+<tr><td>Ruby</td><td><code>@ruby/3.4-wasm-wasi</code>（官方 ruby.wasm，CRuby 3.2/3.3/3.4/4.0）</td><td>解包 92.74 MB（含 full profile 的 usr 树）</td><td>WASI Preview1，<code>minimal</code>/<code>full</code> 两种 profile；浏览器端要有 WASI polyfill；<code>rbwasm pack</code> 把 gem/stdlib 打进 VFS。<b>无线程、无网络</b></td><td>MIT</td></tr>
+<tr><td>PHP</td><td><code>@php-wasm/web</code> 3.1.64（WordPress Playground 内核）</td><td>解包 30.10 MB；单版本 wasm 约 17–24 MB（PHP 8.4 约 23 MB）</td><td>PHP 是同步的，浏览器是异步的 ⇒ 两套构建：<b>Asyncify</b>（全浏览器、体积大）与 <b>JSPI</b>（更小、仅 V8/Chrome/Edge）。必须按 UA 选</td><td>开源（注意各扩展许可）</td></tr>
+<tr><td>R</td><td><code>webr@0.6.1</code></td><td>解包 47.17 MB；含 R + base packages 首次约 30 MB；0.2.0 起 lazy VFS 把 REPL 首次降到 9.5 MB</td><td><code>new WebR({ baseUrl })</code>，必须在 Worker；<code>webr::install()</code> 从 <code>repo.r-wasm.org</code> 装预编译 Wasm 包；C/Fortran 包要专门重编</td><td><b class="k">GPL-2.0-or-later 传染</b>（R 本体）。商业闭源产品别把它打进前端，改走服务端 R</td></tr>
+<tr><td>Java</td><td>CheerpJ 5.0（完整 OpenJDK 编到 WASM + JIT）</td><td>从 CDN 拉完整 JRE，首次几十 MB；常驻数百 MB</td><td>Java 8/11/17/21（25 preview）；跑的是<b>未修改的字节码/JAR</b>，不是源码；源码级 playground 需要额外的 javac。Swing/AWT/反射/自定义 ClassLoader 都支持，是最接近「真 JVM」的方案</td><td><b class="k">专有</b>：社区版仅个人/非商业开源，必须走官方 CDN + 署名 + 不可自托管；Small Business £100/开发者/月；自托管 £5 000/年；Enterprise 按应用报价</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>6. C / C++ / Go 编译链 <span class="tag t-c">B2</span></h3>
+<div class="scroll">
+<table>
+<thead><tr><th>语言</th><th>依赖</th><th>体积</th><th>关键配置</th></tr></thead>
+<tbody>
+<tr><td>C / C++</td><td><code>@yowasp/clang</code>（Clang 22 + LLD + WASI sysroot）、<code>@bjorn3/browser_wasi_shim</code>（0.11 MB）；备选 <code>browsercc</code>、<code>@live-codes/clang-wasm</code></td><td>YoWASP 解包 100.61 MB / 首次约 23 MB 压缩；browsercc 未压缩 clang 43 MB + lld 23 MB + sysroot 29 MB + PCH 19 MB；live-codes 28 MB 压缩 / 85 MB 解包常驻</td><td>编译到 <code>wasm32-wasip1</code>，用内存 FS 传源码，自写约 140 行 WASI host 映射 fd 0/1/2、clock、random。<b>必配预编译头</b>：<code>#include &lt;bits/stdc++.h&gt;</code> 每次解析 5–9 s，PCH 后 1–3 s。编译缓存 key = 源码 + 参数哈希</td></tr>
+<tr><td>Go</td><td>官方 <code>cmd/compile</code> + <code>cmd/link</code> 交叉编译到 <code>GOOS=wasip1 GOARCH=wasm</code>；预编译标准库归档</td><td>全量 std 约 140 MB；裁剪常用包后 42 MB 原始 / 10 MB gzip；总首次约 23 MB 压缩</td><td><code>importcfg</code> 把 import path 映射到归档；WASI <code>poll_oneoff</code> 要自己实现多订阅时钟，否则 <code>time.Sleep</code> / goroutine 定时器会挂。<b>别用 Yaegi 解释器</b>：泛型推导、min/max、os.Exit、死锁检测都对不上真 Go</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout warn">
+  <b>编译型语言的语义偏差必须显式告诉用户</b>：wasm32 下 <code>sizeof(long)==4</code>、解引用 NULL 读到 0 而不是段错误、C++ 异常默认链接失败（要自己写 <code>__cxa_throw</code> stub）、无文件/网络/线程、<code>conio.h</code> 不存在。用户会以为是自己的代码写错了，其实是运行时能力缺口 —— 这类提示应进能力表，而不是 FAQ。
+</div>
+
+<h3>7. Rust / C# / 其它 <span class="tag t-d">B3</span></h3>
+<ul>
+<li><b>Rust</b>：rustc 依赖 LLVM，塞进浏览器不实用（<code>rubrc</code> 是 WIP 实验，要 COOP/COEP，不支持外部 crate / proc macro）；只做前端类型检查的 <code>rust-js</code> 预估 21–32 MB brotli 且不生码。官方 Rust Playground 本身就是服务端容器。<b>结论：走 B3。</b></li>
+<li><b>C#</b>：Blazor WASM 是把 <code>.NET 运行时</code>（约 1.3–2.5 MB 压缩）+ 预编译 DLL 下载到浏览器执行，<b>不是源码编译器</b>；Roslyn 编译到 WASM 无成熟方案。要「输入 C# 源码点运行」，走 B3。</li>
+<li><b>Kotlin / Scala / Swift / Dart / Julia / Perl / Bash / Fortran / Haskell / 汇编</b>：浏览器端没有可用的源码级运行时，一律 B3。Bash 尤其别被 WebContainers 的虚拟 shell 迷惑，那不是真 bash。</li>
+</ul>
+
+<h3>8. 服务端沙箱（B3）选型</h3>
+<div class="scroll">
+<table>
+<thead><tr><th>方案</th><th>语言数</th><th>隔离模型</th><th>冷启动 / 内存</th><th>取舍</th></tr></thead>
+<tbody>
+<tr><td><b>Piston</b> <span class="tag t-c">L1 进程级</span></td><td>官方列表约 88 项（含 awk/bash/java/csharp/kotlin/swift/rust/rscript/sqlite3/zig 及大量 esolang）</td><td><b>Isolate inside Docker</b>：namespace + chroot + cgroup + 每提交独立非特权用户；外层容器需 <code>--privileged</code></td><td>100–300 ms；基础约 150 MB + 每任务</td><td>部署最简单、MIT、2 个端点。<b>默认限制</b>：run 3 s / compile 10 s（wall + CPU 双限）、256 进程、2048 文件、<b>stdout 截断 1024 字符</b>、默认禁出站网络；<span class="k">内存限制默认 -1（无限制）</span>。公共 API 自 2026-02-15 起需授权且明确不发商业 / 个人 / 教学作业项目 ⇒ 必须自建</td></tr>
+<tr><td><b>Judge0</b> <span class="tag t-c">L1 进程级</span></td><td>75+</td><td>同为 <b>isolate</b> + Rails/Redis/PostgreSQL；官方 compose 的 server 与 worker 都是 <code>privileged: true</code>，镜像内运行用户带 <code>NOPASSWD: ALL</code> sudo</td><td>50–200 ms；约 200 MB 基础</td><td>功能最全（批量提交、webhook、判分历史），GPL-3.0；<b>历史上出过沙箱逃逸 CVE-2024-28185 / 28189 / 29021（CVSS 9.1–10.0），必须 ≥1.13.1 并持续跟版</b></td></tr>
+<tr><td><b>gVisor</b> <span class="tag t-b">L2 用户态内核</span></td><td>任意 OCI 镜像</td><td>Go 写的 Sentry 拦截 syscall，宿主内核不直接暴露；无需 KVM，可作 OCI RuntimeClass</td><td>进程级启动（毫秒），无内核可引导</td><td>密度最高、Docker/K8s 集成最好；<b>syscall / 小文件 IO 重的负载有 10–30% 量级税</b>；部分 syscall 兼容性缺口。适合套在 L1 外面做第二层</td></tr>
+<tr><td><b>Firecracker</b> <span class="tag t-d">L3 硬件虚拟化</span></td><td>任意 Linux 二进制</td><td>KVM microVM，每任务独立 guest kernel + <code>jailer</code> 二次隔离；仅 5 个模拟设备</td><td>官方：用户态启动 <b>&lt;125 ms</b>、每 VM 开销 <b>&lt;5 MiB</b>、单宿主 <b>150 VM/s</b>；快照恢复更快</td><td>隔离最强、Apache-2.0；需要 <code>/dev/kvm</code>（裸机或嵌套虚拟化），要自己管 rootfs / 内核 / 网络 / 快照池，运维最重。多租户、跑 AI 生成代码时优先</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout warn">
+  <b>口径订正：这三者不是同一档，不能并列叫「服务端沙箱」。</b>Piston 与 Judge0 的隔离基础是同一个东西（isolate，进程级）；Firecracker 是 VM 级；gVisor 居中。而且<b>反直觉的一点</b>：为了创建 namespace / cgroup / chroot，Piston 与 Judge0 自身都必须运行在特权容器里 —— 真正的边界不在 isolate，而在<b>「执行节点是否与你的业务、数据库、凭据同机」</b>。把 Piston 塞进主站同一台机器，等于把整机暴露给任意用户代码。<br>
+  <span class="small">最小可行安全形态：独立执行节点 + 无云凭据 / 无内网可达 + 默认禁网 + 每任务显式限额 + 外层再套 gVisor 或 microVM（或直接把 L1 整个装进 L3）。</span>
+</div>
+
+<h2 id="s5">五、实测体积表（npm registry，2026-11-11）</h2>
+<p>下表是我直接查 registry 元数据拿到的 <code>dist.unpackedSize</code>，<b>口径统一为解包后 MB（1024）</b>。它不是首次下载量，用途是横向比较「这个依赖装进项目有多重」。</p>
+<div class="scroll">
+<table>
+<thead><tr><th>包</th><th>版本</th><th>解包 MB</th><th>实际首次传输（另有来源）</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td><code>@webcontainer/api</code></td><td>1.6.4</td><td>0.17</td><td>运行时约 20 MB（CDN）</td><td>SDK ≠ 运行时</td></tr>
+<tr><td><code>codemirror</code></td><td>6.0.2</td><td>0.02</td><td>core 约 0.15 MB gzip</td><td>meta 包，实际按模块累加</td></tr>
+<tr><td><code>@bjorn3/browser_wasi_shim</code></td><td>0.4.2</td><td>0.11</td><td>—</td><td>WASI host 胶水</td></tr>
+<tr><td><code>@codemirror/state</code></td><td>6.7.6</td><td>0.42</td><td>—</td><td>—</td></tr>
+<tr><td><code>wasmoon</code></td><td>1.16.0</td><td><b>0.44</b></td><td>约 0.2–0.3 MB gzip</td><td>Lua 5.4 完整解释器，最划算</td></tr>
+<tr><td><code>sucrase</code></td><td>3.35.1</td><td>1.08</td><td>约 0.27 MB gzip</td><td>TS/JSX 单文件转译</td></tr>
+<tr><td><code>fengari</code></td><td>0.1.5</td><td>1.56</td><td>—</td><td>纯 JS Lua 5.3</td></tr>
+<tr><td><code>typescript</code></td><td>7.0.2</td><td>2.38</td><td>—</td><td>类型检查别放在运行路径</td></tr>
+<tr><td><code>esbuild-wasm</code></td><td>0.28.2</td><td>13.86</td><td>wasm 约 9 MB</td><td>初始化 1–2 s，之后增量极快</td></tr>
+<tr><td><code>pyodide</code></td><td>314.0.7</td><td>13.24</td><td><b>约 6.44 MB</b>（gzip 后 core）</td><td>full 发行包 200+ MB</td></tr>
+<tr><td><code>@electric-sql/pglite</code></td><td>0.5.16</td><td>25.11</td><td>约 3 MB gzip</td><td>真 Postgres</td></tr>
+<tr><td><code>sql.js</code></td><td>1.16.0</td><td>29.82</td><td>约 0.4 MB gzip</td><td>多套构建 + 测试撑大了包</td></tr>
+<tr><td><code>@php-wasm/web</code></td><td>3.1.64</td><td>30.10</td><td>单版本 wasm 17–24 MB</td><td>Asyncify / JSPI 两套</td></tr>
+<tr><td><code>webr</code></td><td>0.6.1</td><td>47.17</td><td>约 30 MB（含 base packages）</td><td>GPL 传染</td></tr>
+<tr><td><code>@ruby/3.4-wasm-wasi</code></td><td>2.10.1</td><td>92.74</td><td>按 profile 取子集</td><td>含完整 usr 树</td></tr>
+<tr><td><code>@yowasp/clang</code></td><td>22.0.0-git20542-10</td><td>100.61</td><td>约 23 MB 压缩</td><td>Clang + LLD + sysroot</td></tr>
+<tr><td><code>@duckdb/duckdb-wasm</code></td><td>1.33.1-dev57.0</td><td><b>142.46</b></td><td>约 2.8 MB gzip（单套 wasm）</td><td>包内两套 wasm 各 35–40 MB</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small">编辑器参考：<code>monaco-editor</code> 约 1.5 MB gzip / 5 MB+ minified（本次 registry 请求超时，采用公开口径）；<code>CodeMirror 6</code> 可 tree-shake 到约 150 KB。在多语言 playground 里，编辑器比运行时便宜一个数量级，别在这上面过度优化。</p>
+
+<h2 id="s6">六、运行时资源占用</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>层级</th><th>首次传输</th><th>常驻内存</th><th>峰值内存 / 启动</th></tr></thead>
+<tbody>
+<tr><td>壳 + CodeMirror 6（首屏）</td><td>≤ 1 MB</td><td>20–50 MB</td><td>毫秒级</td></tr>
+<tr><td>JS/TS（Sucrase / iframe）</td><td>0.3–1 MB</td><td>50–150 MB</td><td>毫秒级；esbuild-wasm 初始化 1–2 s</td></tr>
+<tr><td>Lua / SQLite</td><td>0.2–1 MB</td><td>&lt; 50 MB</td><td>&lt; 200 ms</td></tr>
+<tr><td>Python（Pyodide core）</td><td>6.4 MB（二次约 2 KB）</td><td>数十 MB；科学栈数百 MB</td><td><b>WASM 编译期 3–4 GB</b>；2.1–2.4 s 可运行</td></tr>
+<tr><td>PGlite / DuckDB</td><td>2.8–3 MB</td><td>100–300 MB（随数据量）</td><td>0.5–2 s 冷启</td></tr>
+<tr><td>C/C++ / Go 编译链</td><td>约 23 MB</td><td><b>几百 MB</b>（工具链常驻换热编译 ~100 ms）</td><td>冷编译 3–9 s；PCH/归档后 1–3 s</td></tr>
+<tr><td>WebContainers</td><td>约 20 MB</td><td>基础 50–100 MB；大项目 200–300 MB；重负载 500–800 MB</td><td>完整环境约 2 s；单实例</td></tr>
+<tr><td>服务端（每任务）</td><td>客户端 0</td><td>Piston 基础约 150 MB + 每任务；microVM 每 VM 独立</td><td>100–300 ms，或快照恢复约 5 ms</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>结构性上限</b>：wasm32 线性内存理论上限 4 GB，但浏览器标签页实际可用堆通常 2–4 GB，移动端远低于此；<b>WASM 编译期峰值</b>与<b>运行期常驻</b>是两笔账，前者才是移动设备 OOM 的真因。多语言同时挂载时不要预先实例化所有运行时 —— 一次只保留用户当前选中的那一个，切换时 terminate 旧 Worker 释放。</p>
+<p><b>边际成本</b>：B0～B2 全部在用户设备上算，服务端算力成本为零、天然抗滥用、可离线、数据不出端；代价是<b>结果不可信</b>（用户完全掌控执行环境），所以评测、判分、面试评分、证书校验必须走 B3。</p>
+
+<h2 id="s7">七、部署与安全硬约束</h2>
+<ol>
+<li><b>独立可注册域，不是子域。</b>主站若是 <code>playground.example.com</code>，预览必须用与主站<b>不同的可注册域</b>（如 <code>cdpn.io</code> 对 <code>codepen.io</code>），而不是 <code>run.example.com</code> 这种同站子域。同站子域挡不住 <code>Domain=example.com</code> 的 cookie，密码管理器也可能把登录填进预览页的表单。</li>
+<li><code>sandbox="allow-scripts"</code>，<b>绝不能</b>同时给 <code>allow-same-origin</code>（同源 frame 能自己摘掉 sandbox 再重载）。frame 处于 opaque origin，<code>event.origin</code> 是 <code>"null"</code> 证明不了任何事 ⇒ 每条消息都要校 <code>event.source === iframe.contentWindow</code>。</li>
+<li><b>CSP</b>：runner 页 <code>default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:</code>，禁止加载外部脚本和外联数据。<code>postMessage</code> 是 structured clone，函数 / DOM 节点 / 循环引用都过不去，输出序列化要限深度并用字符串标签替代。</li>
+<li><b>无限循环只能外部杀。</b>同步循环不 yield，同线程的 <code>setTimeout</code> 永远轮不到，<code>try/catch</code> 也接不住。看门狗在宿主，超时 <code>worker.terminate()</code> + 重建；iframe 路线只能销毁重建。Pyodide 想做「优雅中断」需 <code>setInterruptBuffer()</code> + SharedArrayBuffer。</li>
+<li><b>COOP/COEP 是全局开关。</b><code>Cross-Origin-Opener-Policy: same-origin</code> + <code>Cross-Origin-Embedder-Policy: require-corp</code> 一开，所有第三方资源都要 CORP/CORS 头，图片、字体、CDN、嵌入 iframe 可能成片失效。<b>建议把需要 SharedArrayBuffer 的运行时放在单独子站</b>，主站保持普通，避免全站改造；代价是跨域通信与部署复杂度。HTTPS 是硬要求（localhost 例外）。</li>
+<li><b>版本一致性。</b>「JS 胶水在 npm 包里、.wasm 产物在 CDN」是常见形态（Pyodide / DuckDB / webR / esbuild 都是）。两侧版本必须严格 pin 同一个常量，错版直接运行时崩。所有资源 URL 做成运行时可配置，别硬编码进 bundle —— 内网/离线交付就靠这个。</li>
+<li><b>缓存策略。</b>运行时资源 <code>Cache-Control: public, max-age=0</code> + ETag（二次访问实测约 2 KB）；Service Worker 预缓存；<b>按语言懒加载</b>，选中才下载；产物闸门禁止运行时进首屏 chunk。</li>
+<li><b>授权审查（会直接否决方案）</b>：WebContainer API 的 npm 包是 MIT，但<b>运行时是专有的，商用生产需授权</b>，开源用途免费；CheerpJ 社区版不可自托管、需署名；webR 继承 R 的 GPL-2.0-or-later，闭源商业分发要么合规开源要么改走服务端 R。</li>
+</ol>
+
+<h2 id="s8">八、落地顺序与验收判据</h2>
+<ol>
+<li><b>先写契约和能力表，并给它们写测试。</b>先把 <code>RunRequest/RunResult</code>、能力三档、<code>supports()</code> 定死，再动任何运行时。这一步最便宜，返工最贵。</li>
+<li><b>打通 B0 + B3 最小闭环</b>：JS 走 iframe，Python 走 Piston。把编辑器、输出面板、stdin、超时、分享链接、错误展示全部做完。此时「多语言」已经是真的，且没有体积风险。</li>
+<li><b>按体积从轻到重逐个迁到 B1</b>：Lua(0.44) → SQL(3) → Python(6.4) → PHP/Ruby(20–30) → R(30，注意 GPL)。每接一门都补端到端冒烟 + 拆线负例。</li>
+<li><b>B2 编译链最后做</b>（成本最高、收益最窄），除非明确要 C/Go 教学。优先复用 YoWASP / Go 官方工具链的现成 WASM 构建，不要自己编 LLVM。</li>
+<li><b>最后做部署层</b>：CDN 镜像与运行时 URL 可配置、Service Worker 缓存、COOP/COEP 子域隔离、体积与缓存命中率监控。</li>
+</ol>
+<div class="callout ok">
+  <b>验收判据（押「可观察副作用 + 可计数的量」，别押「没抛错」）</b>
+  <ul>
+    <li>每门语言固定 6 条端到端冒烟：stdout 回显、stderr + 非零退出码、stdin 回读、中文/UTF-8、无限循环被超时杀死且有明确 <code>timedOut</code>、依赖导入后能<b>读回结果字节</b>。</li>
+    <li><b>拆线负例</b>：故意把某门语言的 loader URL 改坏 ⇒ 只有这门语言精确红，其它语言全绿。这能抓住「运行时加载出来但根本没接线」——单测对没接线天生免疫。</li>
+    <li>缓存判据：二次访问运行时请求 <b>0 body</b>（看 transferSize），不是「感觉变快了」。</li>
+    <li>产物闸门：首屏 ≤ 1 MB，运行时资产不在首屏 chunk；改回静态 import 必须精确红。</li>
+    <li>能力置灰判据：声明 <code>unsupported</code> 的按钮真的点不动，且给出可读理由。</li>
+  </ul>
+</div>
+
+<h2 id="s9">九、坑清单</h2>
+<ol>
+<li><b>「支持多语言」的成本是线性叠加的，不是一次性投入。</b>五种语言全部预加载就是 40–60 MB 首屏，移动网络不可用。单语言 ≤ 5 MB + 懒加载应写成硬预算指标。</li>
+<li><b>「包能加载」≠「能跑用户代码」。</b>运行时初始化成功、单测全绿，都可能只是 loader 通了；只有端到端跑一段真代码才作数。</li>
+<li><b>体积数字按版本核对。</b>Pyodide 从 0.2x 的 6.4 MB / 4–5 s，到 314.x 的 CPython 3.14.2；PHP.wasm 2026-03 靠 <code>MAIN_MODULE=2</code> 单次砍掉 122 MB。旧博客结论不能直接引用。</li>
+<li><b>「未做」清单本身会漂移。</b>开工前先 grep 代码，别拿一份凭印象维护的能力表当真值。</li>
+<li><b>语义偏差要显式标注，不能静默。</b>wasm32 指针 4 字节、NULL 读不崩、C++ 异常、Go 的 poll_oneoff、Python 无 threading/socket —— 这些不是 bug，是能力边界。</li>
+<li><b>用户以为的「超时」可能是「编译」。</b>编译时间和执行时间必须分开计时、分开限时，否则 C++ 第一次点运行必然被误杀。</li>
+<li><b>Piston 的两个默认值都要改，内存比 stdout 更危险。</b><code>stdout</code> 默认截断 1024 字符，<code>yes</code> 类程序或大表格会静默丢输出（状态 <code>OL</code> / <code>EL</code>）；而 <code>run_memory_limit</code> / <code>compile_memory_limit</code> 官方默认是 <span class="k">-1，即不限制内存</span> —— 一段 <code>[0]*10**9</code> 就能把执行节点打 OOM。接入第一件事是显式传内存上限与输出上限，并把 <code>TO / SG / RE / OL / EL / XX</code> 六种状态映射到 UI。</li>
+<li><b>CDN 版本与 npm 版本错配</b>是最难查的一类线上崩溃，因为它只在特定浏览器/缓存状态下出现。</li>
+<li><b>不要在移动端常驻多个 WASM 运行时。</b>WASM 编译期峰值 1–4 GB，直接 OOM；切语言先 terminate。</li>
+<li><b>客户端结果不可信。</b>凡涉及判分/评测，浏览器端只能当「预览」，真值必须服务端再跑一遍。</li>
+<li><b>全站 COOP/COEP 之前先盘点第三方资源。</b>这是部署层最容易被低估的一次性改造成本。</li>
+<li><b>授权要在选型阶段过一遍</b>：WebContainer / CheerpJ / webR 三家各有硬约束，等做完再发现就得推翻架构。</li>
+</ol>
+
+<h2 id="s10">十、数据来源与口径声明</h2>
+<ul class="small">
+<li><b>一手 / 官方</b>：Pyodide 官方文档（下载与部署、keyboard-interrupts、changelog、roadmap、release blog）、ruby/ruby.wasm README、WordPress Playground 官方优化公告（2026-03-11）、CheerpJ 官方定价与产品页、StackBlitz / WebContainers 官方文档与 browser-support、<b>Piston 仓库 README（2026 版：Isolate inside Docker、约 88 运行时、内存默认 -1、stdout 1024、公共 API 2026-02-15 起需授权）</b>、<b>Judge0 官方 docker-compose / Dockerfile（privileged: true、NOPASSWD sudo）与 isolate 架构</b>、<b>Firecracker 官方站（&lt;125 ms / &lt;5 MiB / 150 VM/s / Apache-2.0）</b>、<b>gVisor 官方站（用户态内核、syscall 税、checkpoint/restore）</b>、Go 官方文档、MDN（SharedArrayBuffer / iframe sandbox）、webR tidyverse 0.2.0 公告。</li>
+<li><b>实测</b>：本文所有 <code>dist.unpackedSize</code> 为 2026-11-11 直接查 npm registry 元数据所得，口径为解包后字节，换算 1024。Pyodide 文件级传输数字来自公开的 ADR-0007 实测（含 27 请求、首次 6 443 505 B、二次 2 325 B），并与 npm core 解包 13.24 MB 交叉吻合。</li>
+<li><b>第三方实测 / Community</b>：YoWASP / browsercc / live-codes clang-wasm 体积与 C++ 编译耗时、Go 编译链 WASM 实践、SciREPL 的 WASM 编译期内存峰值、Monaco/CodeMirror 体积、Piston/Judge0/microVM 性能与安全对比。这些数字口径不统一（是否含浏览器进程、是否含预览 iframe、压缩算法），<b>只作为数量级参考</b>。</li>
+<li><b>不作为依据</b>：搜索过程中出现的多篇 AI 生成「基准测试」文章（虚构 benchmark 数字、把 Pyodide 写成 15 MB gzipped / 92% 原生性能等），已剔除。</li>
+<li><b>上线前必做</b>：用自己的目标语言清单、目标设备、目标网络，实测首屏传输量、TTI、峰值 RSS、二次缓存命中率。本文数字用于选型，不用于验收。</li>
+</ul>
+
+<h2 id="s11">十一、专题：能否只留「A 原生 + 服务端」，把 B/C 全砍掉</h2>
+
+<div class="callout">
+  <b>结论：能，而且对「输入源码 → 输出文本」这一类 playground，这是更省事、覆盖更全、结果更可信的默认方案。但 A 不能砍。</b>
+  B（WASM 解释器 / 运行时）和 C（浏览器内编译链）可以从「必做」降级为「可选加速 / 离线降级」；A 的性质则要从「执行后端之一」改成<b>「浏览器环境本身」</b>——DOM、Canvas、CSS 预览、交互事件没有服务端等价物。真正要改的不是删掉几层，而是<b>把「执行位置」抽象进 Runner 契约</b>。
+</div>
+
+<h3>11.1 先对齐命名</h3>
+<div class="scroll"><table>
+<thead><tr><th>本文称呼</th><th>对应手册档位</th><th>内容</th><th>纯服务端路线</th></tr></thead>
+<tbody>
+<tr><td><b>A 原生可跑</b></td><td>B0</td><td>JS / TS / HTML / CSS，浏览器自己就是运行时</td><td><b>保留</b>，但只负责浏览器语义</td></tr>
+<tr><td><b>B WASM 运行时</b></td><td>B1</td><td>Pyodide / webR / PHP.wasm / ruby.wasm / sql.js / wasmoon …</td><td><span class="k">可全砍</span></td></tr>
+<tr><td><b>C WASM 编译链</b></td><td>B2</td><td>YoWASP clang / Go→wasip1 / WASI shim</td><td><span class="k">可全砍</span></td></tr>
+<tr><td><b>S 服务端沙箱</b></td><td>B3</td><td>Piston / Judge0 / gVisor / Firecracker</td><td><b>从兜底升为主力</b></td></tr>
+</tbody></table></div>
+
+<h3>11.2 唯一不能服务端化的边界：浏览器语义</h3>
+<p>服务端能跑「语言」，跑不了「浏览器」。Node 与浏览器是同一门语法、两套 API，这一条决定了 A 的存留，跟语言覆盖率无关。</p>
+<div class="scroll"><table>
+<thead><tr><th>能力</th><th>服务端为什么不行</th><th>归属</th></tr></thead>
+<tbody>
+<tr><td>HTML / CSS 实时预览、布局</td><td>只能回传字符串，或用 headless Chrome 截图；没有滚动、hover、点击、响应式</td><td>A（iframe）</td></tr>
+<tr><td>DOM / Canvas / WebGL / p5.js / SVG 动画</td><td>无 <code>window</code> / <code>document</code> / rAF，截图也失去逐帧交互</td><td>A</td></tr>
+<tr><td>React / Vue / 组件试玩、事件回调</td><td>服务端能编译打包，但挂载与交互必须回浏览器</td><td>A（或 A 编译 + A 执行）</td></tr>
+<tr><td><code>fetch</code> / Storage / Worker / 剪贴板 / 权限 API</td><td>是浏览器能力不是语言能力，服务端模拟会撒谎</td><td>A</td></tr>
+<tr><td>敲一个字符就看到结果（低延迟交互）</td><td>一次 RTT + 队列 + 冷启动，100 ms 起跳，无法做逐帧反馈</td><td>A 或本地 WASM</td></tr>
+<tr><td><b>判分 / 评测的可信结果</b></td><td><b>反过来：客户端结果可被篡改，真值只能在服务端</b></td><td>S（必需，不是可选）</td></tr>
+</tbody></table></div>
+<div class="callout ok"><b>所以精确的答案是</b>：如果产品定义是「算法练习 / 后端语言试跑 / 文档代码可运行」，A 可以退化成纯编辑器，B/C 全砍，S 覆盖全部语言。如果产品定义含「前端 playground」，A 是产品语义的一部分，砍了就不是同一个产品了。</div>
+
+<h3>11.3 砍掉 B/C 后，服务端覆盖能力严格更强</h3>
+<p>Piston 官方列表约 88 个运行时，Rust / C# / Kotlin / Swift / Bash / Go / Zig / Haskell / Java / PHP / Ruby / R / Lua / SQLite 全都在，而且是<b>原生编译器 / 解释器</b>，不是 WASM 移植版。一次性消掉的能力缺口包括：</p>
+<div class="grid">
+<div class="card"><b>原生生态完整</b><span>任意 pip 包（含 C 扩展）、cargo crate、go module、多线程、socket、真实文件系统、多文件工程、同语言多版本并存。<code>ppman install</code> 按需装，装多少占多少磁盘。</span></div>
+<div class="card"><b>语义不再打折</b><span>没有 wasm32 指针 4 字节、NULL 读不崩、C++ 异常缺失、Pyodide 无 threading/socket、Go 的 <code>poll_oneoff</code> 要自实现这些偏差。</span></div>
+<div class="card"><b>前端部署约束全消</b><span>无 COOP/COEP、无 SharedArrayBuffer 依赖、无 WASM 编译期 1–4 GB 峰值 OOM、无 PHP Asyncify/JSPI 双构建按 UA 选、无 CDN 与 npm 版本必须同常量。</span></div>
+<div class="card"><b>授权压力转移</b><span>webR 的 GPL、CheerpJ 的商用授权、WebContainer 的专有运行时，不再打进前端分发物；改为「作为网络服务使用」，不触发前端分发义务（非法律意见，商用请过法务）。Judge0 自身 GPL-3.0 亦同理：内部使用不触发。</span></div>
+<div class="card"><b>客户端几乎零成本</b><span>首屏只剩编辑器 + 输出面板，无运行时资产；低端机 / 移动端 / 弱网都友好；Service Worker 缓存、产物闸门、懒加载这一整套复杂度消失。</span></div>
+<div class="card"><b>可观测可治理</b><span>每次运行有 <code>cpu_time</code> / <code>wall_time</code> / <code>memory</code> / <code>status</code>，天然能限流、配额、审计、复现，结果可信。</span></div>
+</div>
+
+<h3>11.4 代价：复杂度不是消失，是从前端搬到运维</h3>
+<div class="scroll"><table>
+<thead><tr><th>维度</th><th>A + S（纯服务端）</th><th>A + B/C + S（混合 WASM）</th></tr></thead>
+<tbody>
+<tr><td><b>CPU / 内存谁付</b></td><td><span class="k">你的服务器，每次运行都有价</span>；边际成本非零</td><td>用户设备 + 一次性 CDN 流量；边际成本≈0</td></tr>
+<tr><td>服务器 / 运维</td><td>必需：执行节点、镜像、语言包升级、队列、限流、配额、监控、审计</td><td>可纯静态托管（无判分时连服务器都不需要）</td></tr>
+<tr><td>离线 / 内网 / 静态交付</td><td><span class="k">不成立</span>（除非内网自建一整套）</td><td>成立：CDN 资源 + 缓存后可完全离线</td></tr>
+<tr><td>延迟 / 交互</td><td>每次 RTT + 排队 + 冷启动；不适合逐帧、REPL 式随写随跑</td><td>本地运行，毫秒级；能保持会话内状态</td></tr>
+<tr><td><b>会话内状态</b></td><td>每任务新进程，变量不跨运行；要 REPL 需常驻 session / 快照（Firecracker 快照、gVisor checkpoint 或应用态进程池），成本与复杂度显著上升</td><td>页面生命周期内 Pyodide / Lua VM 天然保留全局变量</td></tr>
+<tr><td>隐私 / 合规</td><td>用户代码出本机、落日志；企业 / 教育场景可能不允许</td><td>代码不出端</td></tr>
+<tr><td>可用性</td><td>执行服务挂 = 全站不能运行，单点故障</td><td>静态资源 + CDN，可用性极高；服务挂只影响判分 / B3 语言</td></tr>
+<tr><td>滥用面</td><td>公网暴露 = 挖矿、内网探测、DoS；必须鉴权 + 配额 + 出站封锁</td><td>滥用成本由用户自己承担</td></tr>
+<tr><td>多语言覆盖</td><td>广且真（约 88 项），随装包线性扩展</td><td>窄且有语义缺口，每门语言要单独适配与维护</td></tr>
+<tr><td>结果可信</td><td>可信，可直接判分</td><td>客户端不可信，判分仍要服务端再跑一遍</td></tr>
+</tbody></table></div>
+
+<h3>11.5 三档隔离：Piston / Judge0 与 Firecracker 根本不是一档</h3>
+<p>原第四章把三者并列叫「服务端沙箱」是模糊口径，已按 2026-11-11 官方 README 订正（见第四章第 8 节表格）。关键是<b>反直觉的一点</b>：为了创建 namespace / cgroup / chroot，Piston 与 Judge0 自身都要求 <code>--privileged</code> 容器；Judge0 官方 compose 的 server / worker 都是 <code>privileged: true</code>，运行用户还带 <code>NOPASSWD: ALL</code>。所以真正的边界不在 isolate，而在<b>执行节点是否与业务、数据库、云凭据同机</b>。</p>
+<ul>
+<li><b>L1 进程级</b>：Piston / Judge0 = isolate（namespace + chroot + cgroup + 非特权用户），共享宿主内核。适合内网可信用户、教学；<b>不适合裸奔公网的完全不可信代码</b>。</li>
+<li><b>L2 用户态内核</b>：gVisor，syscall 由 Go Sentry 接管，宿主内核不直接暴露；无需 KVM，容器级启动，IO 密集有 syscall 税。适合套在 L1 外面做第二层。</li>
+<li><b>L3 硬件虚拟化</b>：Firecracker / Kata，KVM + 独立 guest kernel + jailer。官方数字：用户态启动 &lt;125 ms、每 VM 开销 &lt;5 MiB、单宿主 150 VM/s、Apache-2.0。多租户 / 公开 SaaS / 跑 AI 生成代码时优先，代价是要 <code>/dev/kvm</code>、自管 rootfs 与快照池。</li>
+</ul>
+<div class="callout warn"><b>最小可行安全形态</b>：独立执行节点 + 无云凭据 / 无内网可达 + 默认禁网 + 每任务显式限额 + 外层再套 gVisor 或 microVM。把 Piston 塞进主站同一台机器，等于把整机交给任意用户代码。</div>
+
+<h3>11.6 接入必改的默认值（Piston 官方 README，2026-11-11）</h3>
+<div class="scroll"><table>
+<thead><tr><th>参数</th><th>默认</th><th>为什么必须改</th></tr></thead>
+<tbody>
+<tr><td><code>run_memory_limit</code> / <code>compile_memory_limit</code></td><td><span class="k">-1（无限制）</span></td><td>一段 <code>[0]*10**9</code> 就能把执行节点打 OOM。这是最严重的一条，比输出截断危险得多</td></tr>
+<tr><td>stdout / stderr 长度</td><td>1024 字符</td><td><code>yes</code> 类程序或大表格静默丢输出，状态 <code>OL</code> / <code>EL</code></td></tr>
+<tr><td><code>run_timeout</code> / <code>compile_timeout</code>（wall + CPU 双限）</td><td>3 s / 10 s</td><td>C++ / Rust 首次编译必然被误杀；编译与执行分开计时、分开限时</td></tr>
+<tr><td>进程数 / 文件数 / 出站网络</td><td>256 / 2048 / 禁网</td><td>公网部署要再复核，禁网别为了「装包方便」打开</td></tr>
+<tr><td>阶段状态</td><td><code>RE / SG / TO / OL / EL / XX</code></td><td>六种都要映射到 UI，别只处理 <code>code === 0</code></td></tr>
+<tr><td>公共 API</td><td>2026-02-15 起需授权 token</td><td>官方明确不给商业项目、个人项目、学校作业、临时项目 ⇒ <b>必须自建</b>，这是隐性运维成本</td></tr>
+</tbody></table></div>
+
+<h3>11.7 成本账（给公式，数字是估算不是实测）</h3>
+<pre>峰值 vCPU ≈ (日运行次数 × 平均 CPU 秒) / (峰值集中小时 × 3600 × 目标利用率)
+峰值内存 ≈ 并发上限 × 单任务内存上限 + 基础服务（Judge0 四容器约 200 MB 起）
+
+例（假设，需自行压测替换）：1 万 DAU × 5 次/日 × 0.5 CPU·s
+  = 2.5 万 CPU·s/日 ≈ 7 CPU·h/日
+  若 30% 集中在 2 小时、按 60% 利用率 ⇒ 约 1.6 vCPU 常驻 + 队列余量
+  并发 20 × 256 MB = 5 GB + 基础服务 + 执行节点隔离冗余</pre>
+<p>WASM 路线的对应成本是 CDN 出流量（一次性、可缓存）+ 用户设备 CPU/内存；<b>DAU 越大、单次越轻，WASM 越接近免费，服务端越按次付钱</b>。反过来，DAU 小、单次重（编译 Rust、跑数据分析），服务端反而更划算，因为用户设备根本扛不住。</p>
+
+<h3>11.8 决策矩阵</h3>
+<div class="scroll"><table>
+<thead><tr><th>场景</th><th>推荐</th><th>理由</th></tr></thead>
+<tbody>
+<tr><td>纯静态托管 / 无运维 / 内网不给机器</td><td><b>A + B</b>（必须留 WASM）</td><td>服务端方案根本不成立</td></tr>
+<tr><td>教学判分 / 竞赛 / 有后端团队</td><td><b>A + S，B/C 全砍</b></td><td>结果可信、语言全覆盖、无前端体积负担，一次打通</td></tr>
+<tr><td>企业内网、代码禁止出端</td><td><b>A + B</b>，S 可选内网自建</td><td>合规优先于覆盖</td></tr>
+<tr><td>离线交付 / 展会 / 弱网</td><td><b>A + B</b></td><td>WASM 是唯一解</td></tr>
+<tr><td>既要离线又要可信判分</td><td><b>混合</b>，契约先抽象执行位置</td><td>离线预览走本地，提交时服务端复跑</td></tr>
+<tr><td>高并发公开 SaaS</td><td><b>混合</b>：高频轻语言下沉 WASM，重语言 / 判分走 S</td><td>把 CPU 成本还给用户设备，S 只承担必须可信的部分</td></tr>
+</tbody></table></div>
+
+<h3>11.9 推荐骨架：把「位置」写进契约，而不是写死在 UI</h3>
+<pre>interface RunRequest {
+  language: LangId;
+  files: { name: string; content: string }[];
+  stdin?: string;
+  limits: { cpuMs: number; wallMs: number; memoryBytes: number; outputBytes: number }; // 显式传，别吃默认值
+}
+type ExecTarget = 'browser' | 'server';
+interface Capability {
+  lang: LangId;
+  targets: ExecTarget[];      // browserOnly / serverOnly / both
+  prefer: ExecTarget;         // 默认路由，可随在线状态切换
+  offline: boolean;
+  trusted: boolean;           // 结果能否用于判分
+  nativeApis: string[];       // 只有 browser 才有的语义，用于置灰理由
+  reason?: string;
+}</pre>
+<ul>
+<li><b>UI 只问 <code>supports()</code> 与 <code>prefer</code></b>，路由层决定本地还是远端；将来想加回 Pyodide 做离线降级，不动一行 UI —— 这与 kite 的 56 个 CapFlag 三档是同一套思路。</li>
+<li><b>默认全部走 S</b>，A 只处理 <code>browserOnly</code> 的语言；B/C 只在出现明确离线需求或 CDN 账单压力时按需引入。</li>
+<li>断线时 <code>prefer</code> 自动切到 <code>browser</code>（若该语言 <code>offline</code> 为真），否则给出可读降级，不要白屏。</li>
+<li><b>能力表真值来自 <code>GET /api/v2/runtimes</code></b> 的 language + version 动态生成，不要手写常量——否则服务端装了新语言，前端永远看不见。</li>
+</ul>
+
+<h3>11.10 纯服务端路线的验收判据</h3>
+<div class="callout ok">
+<ul>
+<li><b>内存负例</b>：提交吃满内存的程序，执行节点存活、返回明确限额状态，不是整节点 OOM。这条最能区分「配了」和「以为配了」。</li>
+<li><b>六种状态映射</b>：<code>RE / SG / TO / OL / EL / XX</code> 各有对应的 UI 文案；超时与输出超限不是「运行失败」一句话带过。</li>
+<li><b>拆线负例</b>：把某语言的服务端包路径改坏 ⇒ 只有该语言精确红，其它语言全绿；这抓的是「能力表写了但没接线」。</li>
+<li><b>逃逸负例</b>：读 <code>/proc/1</code>、探测内网地址、写宿主挂载、起 300 个进程，全部被拒且落审计日志。</li>
+<li><b>降级判据</b>：断网 / 执行服务 5xx / 排队超时，UI 有可读提示且可重试，不是白屏或永久转圈。</li>
+<li><b>判分真值</b>：判分只读服务端结果；同一份代码浏览器预览与服务端结果不一致时要显式提示，不要静默取其一。</li>
+</ul>
+</div>
+<p class="small"><b>最后一句判断</b>：纯服务端不是「少写代码」，而是把复杂度从前端体积与浏览器兼容性，换成一台要长期有人维护的隔离执行节点。团队里若没有人愿意持续跟 CVE、管镜像、看队列，WASM 反而更省；若本来就有后端和机器，A + S 是明显更稳的起点。</p>
+
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11（第十一章为当日追加）</div>
+</div>
+</body>
+</html>
