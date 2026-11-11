@@ -8,13 +8,18 @@
  * 需要 Node 22+（内置 WebSocket）。浏览器路径可用 PLAYGROUND_BROWSER 覆盖。
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PLAYGROUND_PORT || 5188);
 const CDP_PORT = Number(process.env.PLAYGROUND_CDP_PORT || 9333);
+const MODE =
+  process.env.PLAYGROUND_MODE === 'preview' || process.argv.includes('--preview')
+    ? 'preview'
+    : 'dev';
+const REPORT_FILE = process.env.PLAYGROUND_REPORT_FILE || '';
 const BASE = `http://127.0.0.1:${PORT}`;
 const TARGET = `${BASE}/?selftest=1`;
 
@@ -55,11 +60,16 @@ async function main() {
   const viteBin = join(root, 'node_modules', 'vite', 'bin', 'vite.js');
   if (!existsSync(viteBin)) throw new Error('先执行 npm install');
 
-  const vite = spawn(
-    process.execPath,
-    [viteBin, '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'],
-    { cwd: root, stdio: 'ignore', windowsHide: true },
-  );
+  // dev 与 preview 走同一套判据：dev 证明能开发，preview 证明 dist 产物里
+  // glue.wasm 的 /assets/ 路径与 module Worker 也能跑（dev 路径完全不同）。
+  const viteArgs = [
+    viteBin,
+    ...(MODE === 'preview' ? ['preview'] : []),
+    '--host', '127.0.0.1', '--port', String(PORT), '--strictPort',
+  ];
+  const vite = spawn(process.execPath, viteArgs, {
+    cwd: root, stdio: 'ignore', windowsHide: true,
+  });
   const browser = spawn(
     exe,
     [
@@ -128,7 +138,8 @@ async function main() {
 
     if (!report) throw new Error('90 秒内页面没有产出自检报告');
 
-    console.log(`[真机自检] 通过 ${report.passed} · 失败 ${report.failed} · 记账跳过 ${report.skipped} · 共 ${report.assertions.length} 条`);
+    if (REPORT_FILE) writeFileSync(REPORT_FILE, JSON.stringify(report, null, 2));
+    console.log(`[真机自检] 模式 ${MODE} · 通过 ${report.passed} · 失败 ${report.failed} · 记账跳过 ${report.skipped} · 共 ${report.assertions.length} 条`);
     console.log(`[真机自检] 跳过清单：${report.skipIds.join(', ') || '无'}`);
     for (const a of report.assertions) {
       if (a.status === 'fail') console.log(`  [FAIL] ${a.id} ${a.name} — ${a.detail}`);

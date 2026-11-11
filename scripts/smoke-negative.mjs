@@ -34,19 +34,19 @@ if (!original.includes(NEEDLE)) {
       timeout: 240000,
     });
     const raw = `${child.stdout || ''}${child.stderr || ''}`;
-    const summary = /\[真机自检\] 通过 (\d+) · 失败 (\d+) · 记账跳过 (\d+)/.exec(raw);
+    const summary = /通过 (\d+) · 失败 (\d+) · 记账跳过 (\d+)/.exec(raw);
     console.log(raw.trim());
 
     if (!summary) {
       console.error('[真机负例] 没读到自检汇总，原始输出见上');
     } else {
       const [, passed, failed, skipped] = summary.map(Number);
-      const exact = failed === 10 && passed === 14 && skipped === 2;
+      const exact = failed === 10 && passed === 27 && skipped === 2;
       if (exact) {
-        console.log('[真机负例] 通过：iframe 链 10 条精确红，Worker 链与全局判据仍全绿，跳过记账未漂移');
+        console.log('[真机负例] 通过：iframe 链 10 条精确红，Worker / Lua / 全局判据仍全绿，跳过记账未漂移');
         verdict = 0;
       } else {
-        console.error(`[真机负例] 期望 通过 14 / 失败 10 / 跳过 2，实际 通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}`);
+        console.error(`[真机负例] 期望 通过 27 / 失败 10 / 跳过 2，实际 通过 ${passed} / 失败 ${failed} / 跳过 ${skipped}`);
         console.error('[真机负例] 红得少 = 判据没押在消息回传层；红得多 = 改坏了 Worker 链');
       }
     }

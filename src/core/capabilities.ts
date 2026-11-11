@@ -50,6 +50,15 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     nativeApis: ['布局', '级联', 'computed style'],
     serverLanguage: 'file',
   },
+  {
+    lang: 'lua',
+    label: 'Lua',
+    extensions: ['lua'],
+    browserSandbox: 'worker',
+    switchable: ['worker'],
+    nativeApis: ['Lua 5.4 标准库（WASM）', 'io.read 走注入的 stdin', 'dofile 走内存 FS'],
+    serverLanguage: 'lua',
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

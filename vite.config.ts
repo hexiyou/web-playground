@@ -42,6 +42,11 @@ export default defineConfig({
   build: {
     target: 'es2022',
   },
+  // Lua runner 是 module Worker，里面要 import wasmoon(UMD) 与 glue.wasm?url；
+  // ES 格式才允许 Worker 内部用 ESM 导入。
+  worker: {
+    format: 'es',
+  },
   test: {
     environment: 'node',
     include: ['src/tests/**/*.test.ts'],

@@ -3,7 +3,7 @@
  *
  * 纪律：
  *  1. 判据押「可观察副作用 + 可计数的量」，不押「没抛错」。HTML/CSS 押 probes 里
- *     真实读回的页面文本与 computed style。
+ *     真实读回的页面文本与 computed style；Lua 押内存用量、wasm URL、Lua 版本号。
  *  2. 跳过必须单独记账：EXPECTED_SKIPS 是硬编码白名单，多跳一条、少跳一条都判红。
  *  3. 结果挂到 window.__PLAYGROUND_SELFTEST__，方便外部脚本直接读，不靠解析页面文字。
  */
@@ -11,6 +11,7 @@ import type { BrowserSandbox, LangId, RunLimits, RunRequest, RunResult } from '.
 import { deriveCapabilities, validateWiring } from '../core/capabilities';
 import { execute } from '../core/execute';
 import type { RunnerRegistry } from '../core/registry';
+import { isSelfHostedWasm } from '../runners/browser/lua-shared';
 
 export type AssertionStatus = 'pass' | 'fail' | 'skip';
 
@@ -34,8 +35,16 @@ export interface SelftestReport {
 /** 只有这两条允许跳过，且理由必须写清楚。门控自检会核对集合完全相等。 */
 const EXPECTED_SKIPS = ['css/infinite-loop', 'html/infinite-loop'];
 
+const FILE_NAMES: Record<LangId, string> = {
+  javascript: 'main.js',
+  typescript: 'main.ts',
+  html: 'index.html',
+  css: 'style.css',
+  lua: 'main.lua',
+};
+
 function fileName(lang: LangId): string {
-  return { javascript: 'main.js', typescript: 'main.ts', html: 'index.html', css: 'style.css' }[lang];
+  return FILE_NAMES[lang];
 }
 
 function text(r: RunResult): string {
@@ -67,13 +76,18 @@ export async function runSelftest(
       files?: RunRequest['files'];
       sandbox?: BrowserSandbox;
       wallMs?: number;
+      memoryBytes?: number;
     } = {},
   ): Promise<RunResult> {
     const req: RunRequest = {
       language: lang,
       files: opts.files ?? [{ name: fileName(lang), content: code }],
       stdin: opts.stdin ?? '',
-      limits: { ...limits, wallMs: opts.wallMs ?? limits.wallMs },
+      limits: {
+        ...limits,
+        wallMs: opts.wallMs ?? limits.wallMs,
+        memoryBytes: opts.memoryBytes ?? limits.memoryBytes,
+      },
       ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
     };
     return execute(req, reg).result;
@@ -85,7 +99,7 @@ export async function runSelftest(
   pass(
     'global/wiring', 'global', '能力表与注册表一致',
     wiringProblems.length === 0 && caps.every((c) => c.available),
-    wiringProblems.join('；') || `4 门语言全部已接线：${caps.map((c) => c.runnerIds.join('+')).join(' / ')}`,
+    wiringProblems.join('；') || `5 门语言全部已接线：${caps.map((c) => c.runnerIds.join('+')).join(' / ')}`,
   );
 
   // ---------- JavaScript（Worker） ----------
@@ -180,6 +194,68 @@ export async function runSelftest(
     pass('css/cascade', 'css', '级联后者生效', r.probes?.h1Color === 'rgb(171, 205, 239)', `h1Color=${r.probes?.h1Color ?? ''}`);
 
     skip('css/infinite-loop', 'css', '无限循环被终止', 'CSS 没有执行阶段，该判据语义不适用');
+  }
+
+  // ---------- Lua（wasmoon WASM / module Worker） ----------
+  {
+    let r = await run('lua', `print('标准输出标记', 42, true)`);
+    pass('lua/stdout', 'lua', 'print 多参数按 tab 分隔回传',
+      text(r).includes('标准输出标记\t42\ttrue') && r.status === 'ok',
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('lua', `print('中文标记：昆明')`);
+    pass('lua/utf8', 'lua', '中文 UTF-8 往返', text(r).includes('中文标记：昆明'), text(r).slice(0, 120));
+
+    r = await run('lua', `print('IN:' .. tostring(io.read()))`, { stdin: '第一行\n第二行' });
+    pass('lua/stdin', 'lua', 'io.read 读回注入的 stdin', text(r).includes('IN:第一行'), text(r).slice(0, 160));
+
+    r = await run('lua', `print('N:' .. tostring(io.read('*n') * 2))`, { stdin: '21\n' });
+    pass('lua/io-read-number', 'lua', "io.read('*n') 数值转换", text(r).includes('N:42.0') || text(r).includes('N:42'), text(r).slice(0, 160));
+
+    r = await run('lua', `io.write('NO_NEWLINE_MARK')`);
+    pass('lua/io-write', 'lua', 'io.write 无换行也不丢输出', text(r).includes('NO_NEWLINE_MARK'), text(r).slice(0, 160));
+
+    r = await run('lua', `print(tostring({x = 1}))`);
+    pass('lua/table', 'lua', 'tostring(table) 保持 Lua 语义', text(r).includes('table: '), text(r).slice(0, 160));
+
+    r = await run('lua', `return 'RET_MARK_' .. tostring(2 + 3)`);
+    pass('lua/return', 'lua', '顶层 return 标量读回', text(r).includes('RET_MARK_5'), text(r).slice(0, 160));
+
+    const multiMain = `local h = dofile('/helper.lua'); print('MULTI:' .. tostring(h.twice(21)))`;
+    r = await run('lua', multiMain, {
+      files: [
+        { name: 'main.lua', content: multiMain },
+        { name: 'helper.lua', content: `return { twice = function(x) return x * 2 end }` },
+      ],
+    });
+    pass('lua/multi-file', 'lua', '第二文件挂到内存 FS 并读回计算结果',
+      text(r).includes('MULTI:42') && r.status === 'ok', `status=${r.status} 输出=${text(r).slice(0, 160)}`);
+
+    r = await run('lua', `error('刻意报错标记')`);
+    pass('lua/runtime-error', 'lua', '运行时错误可观察',
+      r.status === 'error' && hasStderr(r) && text(r).includes('刻意报错标记'),
+      `status=${r.status} stderr=${hasStderr(r)}`);
+
+    r = await run('lua', `local t = {} for i = 1, 200000 do t[i] = string.rep('x', 100) end`, {
+      memoryBytes: 1024 * 1024,
+    });
+    pass('lua/memory-limit', 'lua', 'Lua allocator 触顶映射为 memory-limit',
+      r.status === 'memory-limit', `status=${r.status} mem=${r.probes?.memoryUsed ?? r.usage?.memoryBytes ?? '无'}`);
+
+    r = await run('lua', `while true do end`, { wallMs: 600 });
+    pass('lua/infinite-loop', 'lua', '同步死循环被 Worker 终止',
+      r.status === 'timeout' && r.timedOut, `status=${r.status} timedOut=${r.timedOut} ${r.durationMs}ms`);
+
+    r = await run('lua', `print('VERSION:' .. _VERSION)`);
+    pass('lua/version', 'lua', 'probes 里读到 Lua 5.4',
+      r.probes?.luaVersion === 'Lua 5.4' && text(r).includes('VERSION:Lua 5.4'),
+      `luaVersion=${r.probes?.luaVersion ?? ''} 输出=${text(r).slice(0, 120)}`);
+
+    r = await run('lua', `print('WASM 已就绪')`);
+    const src = r.probes?.wasmSource ?? '';
+    pass('lua/wasm-selfhost', 'lua', 'glue.wasm 同源自托管且内存用量可计数',
+      isSelfHostedWasm(src, location.origin) && Number(r.probes?.memoryUsed ?? 0) > 0,
+      `wasmSource=${src} memoryUsed=${r.probes?.memoryUsed ?? '无'}`);
   }
 
   // ---------- 门控自检：跳过必须精确等于白名单 ----------

@@ -3,5 +3,7 @@ dist/
 .vite/
 .smoke-profile/
 .negative-report.json
+.negative-lua-report.json
+.smoke-lua-report.json
 *.log
 .DS_Store

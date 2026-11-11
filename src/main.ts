@@ -141,6 +141,13 @@ async function languageExtension(lang: LangId) {
     const { html } = await import('@codemirror/lang-html');
     return html();
   }
+  if (lang === 'lua') {
+    const [{ StreamLanguage }, { lua }] = await Promise.all([
+      import('@codemirror/language'),
+      import('@codemirror/legacy-modes/mode/lua'),
+    ]);
+    return StreamLanguage.define(lua);
+  }
   const { css } = await import('@codemirror/lang-css');
   return css();
 }

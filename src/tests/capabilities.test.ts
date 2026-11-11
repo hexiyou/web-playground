@@ -21,17 +21,17 @@ function fakeRunner(lang: LangId, target: ExecTarget = 'browser', enabled = true
 /** 合成注册表用于验证「拆一门只红一门」的推导逻辑。 */
 function synthetic(): RunnerRegistry {
   const reg = new RunnerRegistry();
-  for (const lang of ['javascript', 'typescript', 'html', 'css'] as LangId[]) {
+  for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua'] as LangId[]) {
     reg.register(fakeRunner(lang));
   }
   return reg;
 }
 
 describe('能力表由接线层推导', () => {
-  it('首版接线真值：四门语言都已接线且只报 browser', () => {
+  it('首版接线真值：五门语言都已接线且只报 browser', () => {
     const reg = createRegistry(() => ({} as unknown as HTMLElement));
     const caps = deriveCapabilities(reg);
-    expect(caps).toHaveLength(4);
+    expect(caps).toHaveLength(5);
     for (const cap of caps) {
       expect(cap.available, `${cap.lang} 应当可用`).toBe(true);
       expect(cap.targets).toEqual(['browser']);
@@ -53,7 +53,25 @@ describe('能力表由接线层推导', () => {
     const off = after.filter((c) => !c.available);
     expect(off.map((c) => c.lang)).toEqual(['css']);
     expect(capabilityFor(after, 'css').reason).toContain('未接线');
-    expect(after.filter((c) => c.available)).toHaveLength(3);
+    expect(after.filter((c) => c.available)).toHaveLength(4);
+    expect(validateWiring(reg, after)).toEqual([]);
+  });
+
+  it('拆掉 Lua runner，只有 Lua 置灰（WASM 语言按门接线）', () => {
+    const reg = createRegistry(() => ({} as unknown as HTMLElement));
+    const before = deriveCapabilities(reg);
+    expect(reg.unregister('wasmoon.lua.wasm')).toBe(true);
+    const after = deriveCapabilities(reg);
+
+    // 只押「Lua 不可用 + 其余每一门的状态与拆线前逐门相同」。
+    // 不押绝对数量、也不押「只有一门置灰」：别的语言若同时被摘，
+    // 这两个断言都会跟着红，拆线负例就不再是「只红一条」了。
+    expect(capabilityFor(after, 'lua').available).toBe(false);
+    expect(capabilityFor(after, 'lua').reason).toContain('未接线');
+    for (const b of before) {
+      if (b.lang === 'lua') continue;
+      expect(capabilityFor(after, b.lang).available, `${b.lang} 不该受 Lua 拆线影响`).toBe(b.available);
+    }
     expect(validateWiring(reg, after)).toEqual([]);
   });
 

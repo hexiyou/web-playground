@@ -14,7 +14,7 @@ export type ExecTarget = 'browser' | 'server';
 /** 浏览器内的执行载体：Worker 可 terminate；iframe 有 DOM 但只能靠重建中止。 */
 export type BrowserSandbox = 'worker' | 'iframe';
 
-export type LangId = 'javascript' | 'typescript' | 'html' | 'css';
+export type LangId = 'javascript' | 'typescript' | 'html' | 'css' | 'lua';
 
 export type RunStatus =
   | 'ok'

@@ -87,6 +87,30 @@ console.log('合计：', total);
     ],
     hint: '跑在 sandbox="allow-scripts" 的 iframe 里，不给 allow-same-origin。',
   },
+  lua: {
+    files: [
+      {
+        name: 'main.lua',
+        content: `-- Lua 5.4 · wasmoon WASM 运行时（glue.wasm 自托管）
+local nums = { 1, 2, 3, 4, 5 }
+local sum = 0
+for _, n in ipairs(nums) do
+  sum = sum + n
+end
+
+print('你好，playground')
+print('sum =', sum)
+print('stdin 长度 =', #stdin)
+print('tostring({}) =', tostring({}))
+
+-- io.read() 读的是契约注入的 stdin；第二个 .lua 文件会挂到内存 FS，
+-- 可以用 dofile('/helper.lua') 加载。顶层 return 的标量会回显到输出区。
+return sum * 2
+`,
+      },
+    ],
+    hint: '跑在独立 module Worker 里（wasmoon 1.16.0 / Lua 5.4），glue.wasm 自托管不走 CDN；无真实网络与文件 IO。',
+  },
   css: {
     files: [
       {

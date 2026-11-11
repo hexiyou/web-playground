@@ -9,8 +9,8 @@
 <div class="app">
   <header>
     <div>
-      <h1>Playground <span class="ver">v0.1</span></h1>
-      <div class="sub">团队内部 · 免环境验证代码片段 · 首版仅浏览器原生语言</div>
+      <h1>Playground <span class="ver">v0.2</span></h1>
+      <div class="sub">团队内部 · 免环境验证代码片段 · 浏览器原生四门 + 第一门 WASM（Lua）</div>
     </div>
     <nav>
       <a href="/playground-architecture-analysis.html" target="_blank" rel="noopener">架构分析手册</a>
@@ -40,7 +40,7 @@
     </section>
     <section class="pane">
       <div class="pane-title">输出 <span id="meta" class="muted"></span></div>
-      <div id="output" class="output"><div class="empty">点「运行」看结果。console.log 会回传到这里。</div></div>
+      <div id="output" class="output"><div class="empty">点「运行」看结果。console.log / print 会回传到这里。</div></div>
       <div class="pane-title">预览 <span class="muted">sandbox iframe · 不给 allow-same-origin</span></div>
       <div id="preview" class="preview"><div class="empty">HTML / CSS，或 JS 切到 iframe 载体时在这里渲染。</div></div>
     </section>
@@ -58,12 +58,13 @@
   <details class="about">
     <summary>契约与后期迁移说明（点开）</summary>
     <div class="about-body">
-      <p><b>首版范围</b>：JavaScript / TypeScript / HTML / CSS 四门，全部在浏览器里跑。JS/TS 默认走 Worker（<code>worker.terminate()</code> 能真杀无限循环），HTML/CSS 走 <code>sandbox="allow-scripts"</code> 的 iframe。TypeScript 用官方 <code>transpileModule</code> 动态加载转译，只做语法转换。</p>
-      <p><b>契约先行</b>：<code>RunRequest</code> 已含 <code>target: browser | server</code>、<code>limits</code>（wall/cpu/memory/output）、<code>files[]</code>、<code>stdin</code>；<code>RunResult</code> 已含 <code>exitCode: number | null</code>（浏览器没有退出码，不假装 0）、<code>usage</code>、<code>probes</code>、<code>preview</code>。能力表 <code>Capability</code> 由注册表 <code>active()</code> 推导 —— 没接线就置灰，单测骗不过去。</p>
-      <p><b>迁移到服务端</b>：<code>src/runners/server/piston.ts</code> 已实现 <code>Runner</code> 接口、<code>buildPistonBody()</code>（显式传内存限额，不吃 Piston 默认的 -1）与 <code>mapPistonResponse()</code>（RE/SG/TO/OL/EL/XX 六种状态映射），默认 <code>enabled: false</code> 且<b>不注册</b>。启用只需在 <code>createRegistry()</code> 传 <code>ServerWiring</code>，UI 一行不用改；能力表会自动出现 <code>server</code> 位置与「可判分」。</p>
-      <p><b>已知边界</b>：iframe 内同步死循环会冻结标签页（浏览器限制，不是实现缺陷），因此该模式的超时判据不做自动验证；JS/TS 请用 Worker 载体。首版不支持模块 import/export。预览 iframe 是 opaque origin，<code>event.origin === 'null'</code> 证明不了任何事，代码里靠 <code>event.source</code> + <code>requestId</code> 双重校验。</p>
-      <p><b>验收</b>：<code>npm run verify</code>（类型检查 + 单测 + 构建，32 条单测全绿）；<code>npm run smoke</code> 用本机 Chromium + CDP 打开 <code>?selftest=1</code> 跑真浏览器端到端判据（26 条：24 绿 / 2 条按白名单记账跳过）；<code>npm run negative</code> 改坏 CSS 接线精确红 1 条，<code>npm run smoke:negative</code> 掐断 iframe 消息回传精确红 10 条 —— 两层负例都证明判据不是「怎么改都全绿」。</p>
-      <p><b>体积基线</b>：首屏入口 gzip <b>10.08 KB</b>；CodeMirror 与各语言包、TypeScript 编译器（3.59 MB / gzip 1.03 MB）全部是独立动态 import chunk，不进首屏。后续每加一门 WASM 语言，先量首屏与 gzip 增量再合并。</p>
+      <p><b>当前范围</b>：JavaScript / TypeScript / HTML / CSS 四门浏览器原生，加上第一门 WASM 语言 <b>Lua 5.4</b>。JS/TS 默认走 Worker（<code>worker.terminate()</code> 能真杀无限循环），HTML/CSS 走 <code>sandbox="allow-scripts"</code> 的 iframe，TypeScript 用官方 <code>transpileModule</code> 动态加载转译。</p>
+      <p><b>Lua 实现</b>：<code>wasmoon 1.16.0</code> 跑在独立 module Worker 里，<code>glue.wasm</code> 用 Vite <code>?url</code> 自托管（默认会去 unpkg，内网/离线不可用，已显式覆盖为同源地址）。Worker 先初始化引擎发 <code>ready</code>，主线程收到后才起墙钟计时 —— wasm 下载与实例化不算进用户代码预算；同步死循环靠 <code>worker.terminate()</code> 真杀。Lua 侧薄壳把 <code>print</code>/<code>io.write</code> 接到输出通道（绕开 Emscripten 行缓冲，无换行也不丢）、<code>io.read</code> 读契约注入的 stdin、<code>os.exit</code> 改成可读错误；第二个 <code>.lua</code> 文件挂到内存 FS，可用 <code>dofile('/helper.lua')</code> 加载。<code>traceAllocations: true</code> 让内存用量与上限都可计数，<code>probes</code> 里能读到 Lua 版本、wasm URL、实际内存用量。</p>
+      <p><b>契约先行</b>：<code>RunRequest</code> 已含 <code>target: browser | server</code>、<code>limits</code>（wall/cpu/memory/output）、<code>files[]</code>、<code>stdin</code>；<code>RunResult</code> 已含 <code>exitCode: number | null</code>（浏览器没有退出码，不假装 0）、<code>usage</code>、<code>probes</code>、<code>preview</code>。能力表 <code>Capability</code> 由注册表 <code>active()</code> 推导 —— 没接线就置灰，单测骗不过去。加一门语言只要登记 + 实现 Runner + 注册 + 加示例 + 补端到端判据，UI 一行不改。</p>
+      <p><b>迁移到服务端</b>：<code>src/runners/server/piston.ts</code> 已实现 <code>Runner</code> 接口、<code>buildPistonBody()</code>（显式传内存限额，不吃 Piston 默认的 -1）与 <code>mapPistonResponse()</code>（RE/SG/TO/OL/EL/XX 六种状态映射），默认 <code>enabled: false</code> 且<b>不注册</b>。启用只需在 <code>createRegistry()</code> 传 <code>ServerWiring</code>，能力表会自动出现 <code>server</code> 位置与「可判分」。</p>
+      <p><b>已知边界</b>：iframe 内同步死循环会冻结标签页（浏览器限制），该模式的超时判据不做自动验证；JS/TS 请用 Worker 载体。首版不支持模块 import/export。预览 iframe 是 opaque origin，<code>event.origin === 'null'</code> 证明不了任何事，代码里靠 <code>event.source</code> + <code>requestId</code> 双重校验。Lua 没有真实网络与文件 IO，每次运行新建引擎（变量不跨运行），没有 REPL session。wasmoon 是 UMD 包，构建时 Vite 会 externalize 它引用但浏览器下并不使用的 node 内建模块，属于预期警告，dev 与 dist 两层真机都已验证。</p>
+      <p><b>验收</b>：<code>npm run verify</code>（类型检查 + 40 条单测 + 构建）；<code>npm run smoke</code> 用本机 Chromium + CDP 打开 <code>?selftest=1</code> 跑真浏览器端到端判据（<b>39 条：37 绿 / 2 条按白名单记账跳过</b>）；<code>npm run smoke:preview</code> 在 <b>dist 产物</b>里跑同一套判据（验证 build 后的 wasm 路径）。四个拆线负例：<code>npm run negative</code>（摘 CSS）、<code>npm run negative:lua</code>（摘 Lua）各精确红 1 条；<code>npm run smoke:negative</code>（掐 iframe 回传）精确红 10 条；<code>npm run smoke:negative:lua</code>（掐 Lua stdout 回传）精确红 8 条并核对红的 id 集合 —— 两层负例都证明判据不是「怎么改都全绿」。</p>
+      <p><b>体积基线（1024 口径，gzip 实测）</b>：与上一版 <code>bcca147</code> 用同一脚本真实对照 —— 首屏 JS <b>9.74 → 10.85 KB</b>，CSS 恒 <b>1.58 KB</b>，首屏合计 <b>11.32 → 12.43 KB（+1.11 KB）</b>。Lua 相关全部懒加载：切到 Lua 编辑器 +1.39 KB；首次运行再下 <code>lua-worker</code> 36.45 KB + <code>glue.wasm</code> 108.04 KB = <b>144.49 KB gzip</b>，不运行 Lua 的用户一个字节都不下载。后续每加一门语言继续按这个口径先量再合并。</p>
     </div>
   </details>
 
