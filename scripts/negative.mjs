@@ -48,7 +48,7 @@ if (!original.includes(NEEDLE)) {
         .flatMap((suite) => suite.assertionResults || [])
         .filter((a) => a.status === 'failed')
         .map((a) => a.fullName);
-      const expected = failedNames.length === 1 && failedNames[0].includes('首版接线真值');
+      const expected = failedNames.length === 1 && failedNames[0].includes('接线真值');
       const exact = data.numFailedTests === 1 && expected;
 
       console.log(`[负例] 改坏 CSS 接线后：失败 ${data.numFailedTests} 条 / 通过 ${data.numPassedTests} 条 / 共 ${data.numTotalTests} 条`);

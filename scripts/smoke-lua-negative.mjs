@@ -66,11 +66,12 @@ if (!original.includes(NEEDLE)) {
         .map((a) => a.id)
         .sort();
       const skips = [...(report.skipIds || [])].sort();
+      // 通过数押相对关系：新增语言判据后这条负例不会跟着漂移。
       const exact =
         JSON.stringify(redIds) === JSON.stringify(EXPECTED_RED) &&
-        report.passed === 29 &&
-        report.failed === 8 &&
-        report.skipped === 2 &&
+        report.passed === report.assertions.length - EXPECTED_RED.length - EXPECTED_SKIPS.length &&
+        report.failed === EXPECTED_RED.length &&
+        report.skipped === EXPECTED_SKIPS.length &&
         JSON.stringify(skips) === JSON.stringify(EXPECTED_SKIPS);
 
       console.log(`[Lua 真机负例] 实际红 ${redIds.length} 条：${redIds.join(', ') || '无'}`);
@@ -81,7 +82,7 @@ if (!original.includes(NEEDLE)) {
           console.error(`  [FAIL] ${a.id} — ${a.detail}`);
         }
       } else {
-        console.log('[Lua 真机负例] 通过：8 条 stdout 判据精确红，其余 29 绿 / 2 记账跳过未漂移');
+        console.log(`[Lua 真机负例] 通过：${EXPECTED_RED.length} 条 stdout 判据精确红，其余 ${report.passed} 绿 / ${report.skipped} 记账跳过未漂移`);
         verdict = 0;
       }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveCapabilities, validateWiring, capabilityFor } from '../core/capabilities';
+import { LANG_DEFS, deriveCapabilities, validateWiring, capabilityFor } from '../core/capabilities';
 import { RunnerRegistry } from '../core/registry';
 import { createRegistry } from '../runners';
 import type { ExecTarget, LangId, RunResult, Runner } from '../core/contract';
@@ -21,17 +21,17 @@ function fakeRunner(lang: LangId, target: ExecTarget = 'browser', enabled = true
 /** 合成注册表用于验证「拆一门只红一门」的推导逻辑。 */
 function synthetic(): RunnerRegistry {
   const reg = new RunnerRegistry();
-  for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua'] as LangId[]) {
+  for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua', 'sql'] as LangId[]) {
     reg.register(fakeRunner(lang));
   }
   return reg;
 }
 
 describe('能力表由接线层推导', () => {
-  it('首版接线真值：五门语言都已接线且只报 browser', () => {
+  it('接线真值：全部语言都已接线且只报 browser', () => {
     const reg = createRegistry(() => ({} as unknown as HTMLElement));
     const caps = deriveCapabilities(reg);
-    expect(caps).toHaveLength(5);
+    expect(caps).toHaveLength(LANG_DEFS.length);
     for (const cap of caps) {
       expect(cap.available, `${cap.lang} 应当可用`).toBe(true);
       expect(cap.targets).toEqual(['browser']);
@@ -53,7 +53,8 @@ describe('能力表由接线层推导', () => {
     const off = after.filter((c) => !c.available);
     expect(off.map((c) => c.lang)).toEqual(['css']);
     expect(capabilityFor(after, 'css').reason).toContain('未接线');
-    expect(after.filter((c) => c.available)).toHaveLength(4);
+    // 押相对数量：再加一门语言时这条不会跟着红，拆线负例仍是「只红一条」。
+    expect(after.filter((c) => c.available)).toHaveLength(before.filter((c) => c.available).length - 1);
     expect(validateWiring(reg, after)).toEqual([]);
   });
 
@@ -71,6 +72,21 @@ describe('能力表由接线层推导', () => {
     for (const b of before) {
       if (b.lang === 'lua') continue;
       expect(capabilityFor(after, b.lang).available, `${b.lang} 不该受 Lua 拆线影响`).toBe(b.available);
+    }
+    expect(validateWiring(reg, after)).toEqual([]);
+  });
+
+  it('拆掉 SQL runner，只有 SQL 置灰（WASM 语言按门接线）', () => {
+    const reg = createRegistry(() => ({} as unknown as HTMLElement));
+    const before = deriveCapabilities(reg);
+    expect(reg.unregister('sql.js.sqlite.wasm')).toBe(true);
+    const after = deriveCapabilities(reg);
+
+    expect(capabilityFor(after, 'sql').available).toBe(false);
+    expect(capabilityFor(after, 'sql').reason).toContain('未接线');
+    for (const b of before) {
+      if (b.lang === 'sql') continue;
+      expect(capabilityFor(after, b.lang).available, `${b.lang} 不该受 SQL 拆线影响`).toBe(b.available);
     }
     expect(validateWiring(reg, after)).toEqual([]);
   });

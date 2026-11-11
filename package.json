@@ -1,6 +1,6 @@
 {
   "name": "team-playground",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "浏览器端代码片段快速验证 playground · 契约先行，服务端执行可插拔",
@@ -12,26 +12,31 @@
     "test": "vitest run",
     "negative": "node scripts/negative.mjs",
     "negative:lua": "node scripts/negative-lua.mjs",
+    "negative:sql": "node scripts/negative-sql.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:preview": "npm run build && node scripts/smoke.mjs --preview",
     "smoke:negative": "node scripts/smoke-negative.mjs",
     "smoke:negative:lua": "node scripts/smoke-lua-negative.mjs",
+    "smoke:negative:sql": "node scripts/smoke-sql-negative.mjs",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.0",
     "@codemirror/lang-html": "^6.4.0",
     "@codemirror/lang-javascript": "^6.2.0",
+    "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.13.1",
     "@codemirror/legacy-modes": "^6.5.5",
     "@codemirror/state": "^6.5.0",
     "@codemirror/view": "^6.36.0",
     "codemirror": "^6.0.2",
+    "sql.js": "^1.16.0",
     "typescript": "^5.9.0",
     "wasmoon": "^1.16.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "@types/sql.js": "^1.4.11",
     "vite": "^6.0.0",
     "vitest": "^3.0.0"
   }

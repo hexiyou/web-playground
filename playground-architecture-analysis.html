@@ -179,13 +179,14 @@ type RunResult  = { stdout: string; stderr: string; exitCode: number | null;
 <table>
 <thead><tr><th>引擎</th><th>npm 解包</th><th>实际传输</th><th>配置要点</th><th>取舍</th></tr></thead>
 <tbody>
-<tr><td><code>sql.js</code> 1.16.0</td><td>29.82 MB</td><td>wasm 约 1 MB / 约 400 KB gzip</td><td><code>initSqlJs({ locateFile })</code>；纯内存，持久化要手动 <code>db.export()</code> 存 IndexedDB</td><td>最轻、冷启 50–200 ms；SQLite 方言</td></tr>
+<tr><td><code>sql.js</code> 1.16.0</td><td>29.82 MB</td><td>单套 <code>sql-wasm-browser.wasm</code> <b>672 KB raw / 328 KB gzip</b>（实测）</td><td><code>initSqlJs({ locateFile })</code>；纯内存，持久化要手动 <code>db.export()</code> 存 IndexedDB</td><td>最轻、冷启 50–200 ms；SQLite 方言</td></tr>
 <tr><td><code>@electric-sql/pglite</code> 0.5.16</td><td>25.11 MB</td><td>约 3 MB gzip</td><td><code>new PGlite('idb://...')</code>；<code>SELECT 1</code> 预热；单写者单标签，多标签要 leader election</td><td>真 PostgreSQL 语义（JSONB / 窗口函数 / pgvector）；冷启 0.5–2 s</td></tr>
 <tr><td><code>@duckdb/duckdb-wasm</code></td><td>142.46 MB</td><td>约 2.8 MB gzip（只加载一套 wasm）</td><td>按浏览器能力选 <code>mvp</code>/<code>eh</code> bundle；读 Parquet/CSV/Arrow</td><td>OLAP 聚合快一个量级；Transactional 写入弱</td></tr>
 </tbody>
 </table>
 </div>
 <p class="small">注意：固定体积不代表固定下载量，DuckDB 与 sql.js 的包里都塞了多套构建。<code>locateFile</code> 类回调必须做成运行时可配置，否则内网/离线交付要重新打包。</p>
+<p class="small"><b>2026-11-11 项目内实测订正</b>：本轮落地 SQL 时直接对构建产物量了字节 —— sql.js 1.16.0 的 <code>dist/sql-wasm-browser.wasm</code> 是 <b>672.07 KB raw / 328.46 KB gzip</b>（1024 口径，gzip -9），浏览器只加载这一套；此前「约 1 MB / 400 KB gzip」是按多套构建估的量级，选型预算请以实测为准。另：默认 wasm 路径由 glue 按 scriptDirectory 拼出，在 module Worker 里不可靠，接入时必须显式传 <code>locateFile</code> 指向同源自托管地址（dev 与 dist 路径完全不同，两层都要真机验）。</p>
 
 <h3>5. Ruby / PHP / R / Java <span class="tag t-b">B1</span></h3>
 <div class="scroll">
@@ -255,7 +256,7 @@ type RunResult  = { stdout: string; stderr: string; exitCode: number | null;
 <tr><td><code>esbuild-wasm</code></td><td>0.28.2</td><td>13.86</td><td>wasm 约 9 MB</td><td>初始化 1–2 s，之后增量极快</td></tr>
 <tr><td><code>pyodide</code></td><td>314.0.7</td><td>13.24</td><td><b>约 6.44 MB</b>（gzip 后 core）</td><td>full 发行包 200+ MB</td></tr>
 <tr><td><code>@electric-sql/pglite</code></td><td>0.5.16</td><td>25.11</td><td>约 3 MB gzip</td><td>真 Postgres</td></tr>
-<tr><td><code>sql.js</code></td><td>1.16.0</td><td>29.82</td><td>约 0.4 MB gzip</td><td>多套构建 + 测试撑大了包</td></tr>
+<tr><td><code>sql.js</code></td><td>1.16.0</td><td>29.82</td><td>328 KB gzip（单套 wasm 实测）</td><td>多套构建 + 测试撑大了包</td></tr>
 <tr><td><code>@php-wasm/web</code></td><td>3.1.64</td><td>30.10</td><td>单版本 wasm 17–24 MB</td><td>Asyncify / JSPI 两套</td></tr>
 <tr><td><code>webr</code></td><td>0.6.1</td><td>47.17</td><td>约 30 MB（含 base packages）</td><td>GPL 传染</td></tr>
 <tr><td><code>@ruby/3.4-wasm-wasi</code></td><td>2.10.1</td><td>92.74</td><td>按 profile 取子集</td><td>含完整 usr 树</td></tr>

@@ -111,6 +111,31 @@ return sum * 2
     ],
     hint: '跑在独立 module Worker 里（wasmoon 1.16.0 / Lua 5.4），glue.wasm 自托管不走 CDN；无真实网络与文件 IO。',
   },
+  sql: {
+    files: [
+      {
+        name: 'main.sql',
+        content: `-- SQLite 3.54 · sql.js WASM（wasm 自托管，不走 CDN）
+CREATE TABLE orders (id INTEGER, city TEXT, amount REAL, note TEXT);
+INSERT INTO orders VALUES
+  (1, '昆明', 128.5, NULL),
+  (2, '成都', 76.0, '已付'),
+  (3, '昆明', 210.0, NULL);
+
+SELECT city, COUNT(*) AS cnt, SUM(amount) AS total
+FROM orders
+GROUP BY city
+ORDER BY total DESC;
+
+SELECT sqlite_version() AS sqlite, '中文标记' AS label, NULL AS nothing;
+
+-- 同一次运行内多语句共享同一个 DB；再加一个 .sql 文件会作为初始化脚本先执行。
+-- 结果集逐行读回，输出字节 / 行数触顶即停；无限递归 CTE 靠 Worker terminate 真杀。
+`,
+      },
+    ],
+    hint: '跑在独立 module Worker 里（sql.js 1.16.0 / SQLite 3.54），wasm 自托管不走 CDN；附加 .sql 文件作初始化脚本。无 allocator 内存上限，只有墙钟 + 输出字节 + 行数上限。',
+  },
   css: {
     files: [
       {

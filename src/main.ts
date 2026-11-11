@@ -148,6 +148,10 @@ async function languageExtension(lang: LangId) {
     ]);
     return StreamLanguage.define(lua);
   }
+  if (lang === 'sql') {
+    const { sql } = await import('@codemirror/lang-sql');
+    return sql();
+  }
   const { css } = await import('@codemirror/lang-css');
   return css();
 }

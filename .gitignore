@@ -4,6 +4,9 @@ dist/
 .smoke-profile/
 .negative-report.json
 .negative-lua-report.json
+.negative-sql-report.json
+.smoke-negative-report.json
 .smoke-lua-report.json
+.smoke-sql-report.json
 *.log
 .DS_Store

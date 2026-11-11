@@ -41,6 +41,7 @@ const FILE_NAMES: Record<LangId, string> = {
   html: 'index.html',
   css: 'style.css',
   lua: 'main.lua',
+  sql: 'main.sql',
 };
 
 function fileName(lang: LangId): string {
@@ -77,6 +78,7 @@ export async function runSelftest(
       sandbox?: BrowserSandbox;
       wallMs?: number;
       memoryBytes?: number;
+      outputBytes?: number;
     } = {},
   ): Promise<RunResult> {
     const req: RunRequest = {
@@ -87,6 +89,7 @@ export async function runSelftest(
         ...limits,
         wallMs: opts.wallMs ?? limits.wallMs,
         memoryBytes: opts.memoryBytes ?? limits.memoryBytes,
+        outputBytes: opts.outputBytes ?? limits.outputBytes,
       },
       ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
     };
@@ -99,7 +102,7 @@ export async function runSelftest(
   pass(
     'global/wiring', 'global', '能力表与注册表一致',
     wiringProblems.length === 0 && caps.every((c) => c.available),
-    wiringProblems.join('；') || `5 门语言全部已接线：${caps.map((c) => c.runnerIds.join('+')).join(' / ')}`,
+    wiringProblems.join('；') || `${caps.length} 门语言全部已接线：${caps.map((c) => c.runnerIds.join('+')).join(' / ')}`,
   );
 
   // ---------- JavaScript（Worker） ----------
@@ -256,6 +259,96 @@ export async function runSelftest(
     pass('lua/wasm-selfhost', 'lua', 'glue.wasm 同源自托管且内存用量可计数',
       isSelfHostedWasm(src, location.origin) && Number(r.probes?.memoryUsed ?? 0) > 0,
       `wasmSource=${src} memoryUsed=${r.probes?.memoryUsed ?? '无'}`);
+  }
+
+  // ---------- SQL（sql.js WASM / module Worker） ----------
+  {
+    let r = await run('sql', `CREATE TABLE t (city TEXT, n INTEGER);
+INSERT INTO t VALUES ('昆明', 2), ('昆明', 3), ('成都', 7);
+SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
+    pass('sql/multi-statement', 'sql', '多语句共享 DB + 聚合结果读回',
+      r.status === 'ok' && text(r).includes('| 成都 | 7 |') && text(r).includes('| 昆明 | 5 |'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 200))}`);
+
+    r = await run('sql', `SELECT '中文标记：昆明' AS s;`);
+    pass('sql/utf8', 'sql', '中文 UTF-8 往返',
+      r.status === 'ok' && text(r).includes('中文标记：昆明'), `status=${r.status} ${text(r).slice(0, 120)}`);
+
+    r = await run('sql', `SELECT NULL AS n, X'0102AB' AS b, 42 AS i;`);
+    pass('sql/null-blob', 'sql', 'NULL 与 BLOB 显式可读',
+      r.status === 'ok' && text(r).includes('| NULL |') && text(r).includes("X'0102ab'"),
+      `status=${r.status} ${text(r).slice(0, 160)}`);
+
+    r = await run('sql', `SELECT sqlite_version() AS v;`);
+    pass('sql/version', 'sql', 'probes 里 SQLite 版本与查询值一致',
+      /^3\.\d+/.test(r.probes?.sqliteVersion ?? '') && text(r).includes(r.probes?.sqliteVersion ?? '___'),
+      `sqliteVersion=${r.probes?.sqliteVersion ?? ''} 输出=${text(r).slice(0, 120)}`);
+
+    r = await run('sql', `CREATE TABLE x (a); INSERT INTO x VALUES (1);`);
+    const wasmSrc = r.probes?.wasmSource ?? '';
+    pass('sql/wasm-selfhost', 'sql', 'wasm 同源自托管且 DB 字节可计数',
+      isSelfHostedWasm(wasmSrc, location.origin) && Number(r.probes?.dbBytes ?? 0) > 0,
+      `wasmSource=${wasmSrc} dbBytes=${r.probes?.dbBytes ?? '无'}`);
+
+    const seedMain = `SELECT COUNT(*) AS c, SUM(v) AS s FROM seed;`;
+    r = await run('sql', seedMain, {
+      files: [
+        { name: 'main.sql', content: seedMain },
+        { name: 'schema.sql', content: `CREATE TABLE seed (v INTEGER); INSERT INTO seed VALUES (10),(20),(30);` },
+      ],
+    });
+    pass('sql/multi-file', 'sql', '附加 .sql 初始化脚本先执行并读回计算结果',
+      r.status === 'ok' && text(r).includes('| 3 | 60 |'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('sql', `SELEC * FROM t;`);
+    pass('sql/syntax-error', 'sql', '语法错误可观察',
+      r.status === 'error' && hasStderr(r) && text(r).includes('syntax error'),
+      `status=${r.status} stderr=${hasStderr(r)}`);
+
+    r = await run('sql', `SELECT * FROM 不存在的表;`);
+    pass('sql/runtime-error', 'sql', '运行时错误可观察',
+      r.status === 'error' && hasStderr(r) && text(r).includes('no such table'),
+      `status=${r.status} ${text(r).slice(0, 160)}`);
+
+    r = await run('sql', `CREATE TABLE q (n); INSERT INTO q VALUES (1),(2),(3),(4);`);
+    pass('sql/rows-modified', 'sql', 'DML 受影响行数可计数',
+      r.status === 'ok' && text(r).includes('受影响 4 行'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('sql', `CREATE TABLE e (a); SELECT a FROM e;`);
+    pass('sql/empty-result', 'sql', '空结果集有可读回显',
+      r.status === 'ok' && text(r).includes('(空结果集'), `status=${r.status} ${text(r).slice(0, 160)}`);
+
+    r = await run(
+      'sql',
+      `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 400) SELECT x, '填充填充填充填充填充填充' AS pad FROM c;`,
+      { outputBytes: 512 },
+    );
+    const outRows = Number(r.probes?.rows ?? 0);
+    pass('sql/output-limit', 'sql', '输出字节触顶停读（不是事后提示）',
+      r.status === 'output-limit' && r.probes?.outputLimited === '1' && outRows > 0 && outRows < 400,
+      `status=${r.status} outputLimited=${r.probes?.outputLimited} rows=${outRows}`);
+
+    r = await run(
+      'sql',
+      `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x < 6000) SELECT x FROM c;`,
+    );
+    const limitedRows = Number(r.probes?.rows ?? 0);
+    pass('sql/row-limit', 'sql', '行数护栏触顶停读',
+      r.status === 'output-limit' && r.probes?.rowLimited === '1' && limitedRows > 4000 && limitedRows <= 5000,
+      `status=${r.status} rowLimited=${r.probes?.rowLimited} rows=${limitedRows}`);
+
+    r = await run('sql', `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT SUM(x) FROM c;`, {
+      wallMs: 600,
+    });
+    pass('sql/infinite-loop', 'sql', '无限递归 CTE 被 Worker 终止',
+      r.status === 'timeout' && r.timedOut, `status=${r.status} timedOut=${r.timedOut} ${r.durationMs}ms`);
+
+    r = await run('sql', `SELECT 1;`);
+    pass('sql/no-memory-cap', 'sql', '没有 allocator 上限就不谎报内存用量',
+      (r.probes?.memoryCapability ?? '').includes('no-allocator-cap') && r.usage?.memoryBytes === undefined,
+      `memoryCapability=${r.probes?.memoryCapability ?? ''} usageMemory=${String(r.usage?.memoryBytes)}`);
   }
 
   // ---------- 门控自检：跳过必须精确等于白名单 ----------

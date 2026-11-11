@@ -59,6 +59,15 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     nativeApis: ['Lua 5.4 标准库（WASM）', 'io.read 走注入的 stdin', 'dofile 走内存 FS'],
     serverLanguage: 'lua',
   },
+  {
+    lang: 'sql',
+    label: 'SQL',
+    extensions: ['sql'],
+    browserSandbox: 'worker',
+    switchable: ['worker'],
+    nativeApis: ['SQLite 3.54（WASM）', '同一次运行内多语句共享 DB', '附加 .sql 文件作初始化脚本'],
+    serverLanguage: 'sqlite3',
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

@@ -48,11 +48,13 @@ if (!original.includes(NEEDLE)) {
         .flatMap((suite) => suite.assertionResults || [])
         .filter((a) => a.status === 'failed')
         .map((a) => a.fullName);
+      // 通过数押「总数 - 1」而不是绝对数字：再加一门语言、再加一条用例时，
+      // 这条负例不会跟着红（上一轮踩过绝对数量耦合的坑）。
       const exact =
         data.numFailedTests === 1 &&
         failedNames.length === 1 &&
-        failedNames[0].includes('首版接线真值') &&
-        data.numPassedTests === 5;
+        failedNames[0].includes('接线真值') &&
+        data.numPassedTests === data.numTotalTests - 1;
 
       console.log(`[Lua 负例] 摘掉 Lua 接线后：失败 ${data.numFailedTests} 条 / 通过 ${data.numPassedTests} 条 / 共 ${data.numTotalTests} 条`);
       console.log(`[Lua 负例] 失败用例：${failedNames.join(' | ') || '无'}`);
