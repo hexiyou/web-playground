@@ -152,6 +152,10 @@ async function languageExtension(lang: LangId) {
     const { sql } = await import('@codemirror/lang-sql');
     return sql();
   }
+  if (lang === 'python') {
+    const { python } = await import('@codemirror/lang-python');
+    return python();
+  }
   const { css } = await import('@codemirror/lang-css');
   return css();
 }

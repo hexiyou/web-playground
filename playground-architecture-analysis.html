@@ -58,7 +58,8 @@
 <div class="callout">
   <b>一句话结论</b><br>
   最佳实践不是「选一个运行时把所有语言塞进浏览器」，而是<b>一套统一的 Runner 契约 + 一张能力表（CapFlag）+ 三类可插拔执行后端</b>：能在浏览器里跑的（JS/TS、Python、Lua、SQL、Ruby、PHP、R、C/C++/Go 编译链）走本地 WASM，跑不了的（Rust、C#、Kotlin、Swift、Bash、原生依赖、真实网络/数据库、需要可信判分）走服务端沙箱。前端只负责编辑、调度、输出呈现，<b>永远不要为某门语言在主流程里开特例</b>。<br>
-  <span class="small">2026-11-11 补：<b>第十一章</b>回答「能否只留 A + 服务端」——答案是 B/C 可以全砍、A 不能砍，且服务端沙箱要按三档隔离重新选型。</span>
+  <span class="small">2026-11-11 补：<b>第十一章</b>回答「能否只留 A + 服务端」——答案是 B/C 可以全砍、A 不能砍，且服务端沙箱要按三档隔离重新选型。</span><br>
+  <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span>
 </div>
 
 <div class="toc">
@@ -72,7 +73,8 @@
   <a href="#s8">八、落地顺序与验收判据</a><br>
   <a href="#s9">九、坑清单</a><br>
   <a href="#s10">十、数据来源与口径声明</a><br>
-  <a href="#s11">十一、专题：能否只留「A 原生 + 服务端」</a>
+  <a href="#s11">十一、专题：能否只留「A 原生 + 服务端」</a><br>
+  <a href="#s12">十二、落地实测：三门 WASM 的真实接线账</a>
 </div>
 
 <h2 id="s1">一、三种体积口径（最容易算错的地方）</h2>
@@ -266,6 +268,7 @@ type RunResult  = { stdout: string; stderr: string; exitCode: number | null;
 </table>
 </div>
 <p class="small">编辑器参考：<code>monaco-editor</code> 约 1.5 MB gzip / 5 MB+ minified（本次 registry 请求超时，采用公开口径）；<code>CodeMirror 6</code> 可 tree-shake 到约 150 KB。在多语言 playground 里，编辑器比运行时便宜一个数量级，别在这上面过度优化。</p>
+<p class="small"><b>2026-11-12 落地订正</b>：上表 Pyodide 的「约 6.44 MB」是官方 ADR-0007 的 <b>27 个请求合计传输量</b>；本仓库自托管 core 四件套实测 <b>12.89 MiB raw / 6.04 MiB gzip -9</b>（1024 口径，四个文件各自压缩），两者口径不同但量级吻合，<b>不能混算</b>。sql.js 的 328 KB 同样是构建产物单套 wasm 的 gzip 实测，不是包解包体积。详见第十二章。</p>
 
 <h2 id="s6">六、运行时资源占用</h2>
 <div class="scroll">
@@ -331,6 +334,9 @@ type RunResult  = { stdout: string; stderr: string; exitCode: number | null;
 <li><b>客户端结果不可信。</b>凡涉及判分/评测，浏览器端只能当「预览」，真值必须服务端再跑一遍。</li>
 <li><b>全站 COOP/COEP 之前先盘点第三方资源。</b>这是部署层最容易被低估的一次性改造成本。</li>
 <li><b>授权要在选型阶段过一遍</b>：WebContainer / CheerpJ / webR 三家各有硬约束，等做完再发现就得推翻架构。</li>
+<li><b>「零外联」必须抓包，且抓包器自己要有证据。</b>只在 page session 上 <code>Network.enable</code> 收不到 module Worker 的请求，此时「外部请求 0 条」是<b>空证据</b>而不是零外联；要 autoAttach worker target 逐个 enable，并确认真的抓到了本地资产请求（本轮要求 ≥3 条 <code>/pyodide/</code>），否则判失败。</li>
+<li><b>core 与 full 分发不是一回事。</b>Pyodide npm 的 core 分发不带 wheel、没有 micropip；<code>loadPackagesFromImports()</code> 会外联并卡 25 s 以上，<code>loadPackage()</code> 在 core 下静默失败。首版只能明令禁止自动装包，并把缺失包错误翻译成人话。</li>
+<li><b>引擎复用 ≠ 进程隔离。</b>复用 Worker 能省掉 9.6 MB wasm 的重复 boot，但 <code>sys.modules</code> 会跨运行残留；靠每次新建 globals 只能隔离变量。超时 / 取消必须 <code>terminate()</code> 并清空缓存，否则下一次会复用一个半死的引擎。</li>
 </ol>
 
 <h2 id="s10">十、数据来源与口径声明</h2>
@@ -480,7 +486,52 @@ interface Capability {
 </div>
 <p class="small"><b>最后一句判断</b>：纯服务端不是「少写代码」，而是把复杂度从前端体积与浏览器兼容性，换成一台要长期有人维护的隔离执行节点。团队里若没有人愿意持续跟 CVE、管镜像、看队列，WASM 反而更省；若本来就有后端和机器，A + S 是明显更稳的起点。</p>
 
-<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11（第十一章为当日追加）</div>
+<h2 id="s12">十二、落地实测：三门 WASM 的真实接线账（v0.2 ~ v0.4）</h2>
+<p class="small">2026-11-12 追加。前十一章是选型分析，本章只记代码真正跑起来之后才看得见的事实：体积一律来自本仓库构建产物（<b>1024 口径，gzip -9</b>；下表把历史上的「KB」统一记作 KiB），不是 registry 元数据，也不是公开 ADR。</p>
+
+<h3>12.1 逐门增量：首屏几乎不动，钱在第一次点运行时付</h3>
+<div class="scroll">
+<table>
+<thead><tr><th>版本</th><th>首屏 JS + CSS</th><th>新增语言首次运行下载</th><th>形状</th></tr></thead>
+<tbody>
+<tr><td>v0.1 四门浏览器原生</td><td>11.32 KiB</td><td>0</td><td>Worker + sandbox iframe，TS 转译按需 import</td></tr>
+<tr><td>v0.2 + Lua 5.4（wasmoon）</td><td>12.43 KiB</td><td>约 145 KiB</td><td>单个 <code>glue.wasm</code>，<code>?url</code> 显式传同源地址</td></tr>
+<tr><td>v0.3 + SQL（sql.js）</td><td>13.36 KiB</td><td>约 345 KiB</td><td>单个 wasm + <code>locateFile</code>，逐行 <code>step()</code> 才压得住输出限额</td></tr>
+<tr><td>v0.4 + Python（Pyodide core）</td><td><b>14.97 KiB</b></td><td><b>6.04 MiB 四件套 + 8.54 KiB worker</b></td><td>12.89 MiB raw：wasm 3.38 MiB / stdlib 2.39 MiB / asm.mjs 0.25 MiB / lock 0.03 MiB</td></tr>
+</tbody>
+</table>
+</div>
+<p><b>结论</b>：四版累计首屏只涨 3.65 KiB，因为运行时全走动态 import；但 Python 的首次运行比前两门<b>高一个数量级</b>，这是「CPython 解释器 + 整包标准库」的形状决定的，不是打包没优化好。所以引擎复用是必须项（9.6 MB wasm 只 boot 一次），资产必须同源可缓存，绝不能预加载。</p>
+
+<h3>12.2 自托管不是一种写法，是三种</h3>
+<ol>
+<li><b>单文件 + 显式 URL</b>（Lua）：wasmoon 默认去 unpkg 取 glue；改成 Vite <code>?url</code> 引入并把绝对 URL 传进引擎。dev 是 <code>/node_modules/</code>、dist 是 <code>/assets/&lt;hash&gt;.wasm</code>，两层都要真机验。</li>
+<li><b>glue 自己拼路径</b>（SQL）：sql.js 按 <code>scriptDirectory</code> 拼 wasm 名，在 module Worker 里不可靠；必须显式给 <code>locateFile</code>。</li>
+<li><b>整套固定文件名目录</b>（Python）：<code>loadPyodide()</code> 按 <code>indexURL</code> 拼四个固定名字，而 Vite 会把 <code>pyodide.mjs</code> 打进带 hash 的 chunk。解法是 <code>scripts/sync-pyodide.mjs</code> 在 postinstall / dev / build 三处<b>幂等</b>同步 <code>public/pyodide/</code>（运行时产物不入库、版本精确 pin、manifest 记字节数），Worker 显式传同源 <code>indexURL</code>。</li>
+</ol>
+<p>共同纪律：<b>不让运行时自己猜 URL</b>；<code>probes</code> 里如实记 URL 只算自述，真机 CDP 抓包才算证据（见第九章第 13 条）。</p>
+
+<h3>12.3 每加一门语言的固定五步与判据纪律</h3>
+<ol>
+<li>登记 <code>LangId</code> / <code>LANG_DEFS</code> / <code>SAMPLES</code> → 实现 Runner → <code>createRegistry()</code> 注册 → CodeMirror 语法包动态 import → 补端到端判据 + 拆线负例。<b>UI 一行不改</b>，能力表由注册表 <code>active()</code> 推导。</li>
+<li><b>拆线负例押红 id 集合 + 相对通过数</b>：押绝对通过数，加一门语言老负例必然误报；本轮九个负例（4 单测 + 5 真机）全部精确。</li>
+<li><b><code>sample/*</code> 跑 <code>SAMPLES</code> 原文</b>：v0.3 的 51 条全绿没一条跑过用户打开页面第一个点的代码，SQL 默认示例用保留字 <code>NOTHING</code> 当别名，一点就语法错。判据押 status / 无 error 诊断，<b>不押输出字节</b>，免得与 stdout 负例耦合。</li>
+<li><b>两阶段计时</b>：引擎 <code>ready</code> 之后才起墙钟，wasm 下载与实例化不算进用户代码预算；同步死循环只能靠 <code>worker.terminate()</code> 真杀。</li>
+<li><b>能力缺口如实登记</b>：sql.js 无 allocator 上限 ⇒ <code>no-allocator-cap</code> 且不填 <code>usage.memoryBytes</code>；Pyodide core 无 wheel ⇒ <code>stdlib-only</code> 且禁用自动装包。不拿 0 冒充用量，不把「档位」写成「已实现」。</li>
+</ol>
+
+<h3>12.4 三个只在实现阶段才暴露的坑</h3>
+<ul>
+<li><b>Node 侧探测不能当浏览器结论</b>：<code>file://</code> 的 <code>indexURL</code> 在 Node 里能勉强走通，浏览器必须 HTTP 同源；反过来 <code>loadPackagesFromImports()</code> 的超时也无法用 Node 复现。</li>
+<li><b>API 名称看着对，语义可能正好相反</b>：SQL 用 <code>db.exec()</code> 会把整个结果集物化进 JS 数组，输出限额等于没设；改逐行 <code>step()</code> 才让限额真正生效。无限递归 CTE 若每行都回传，会先触输出限额而不是超时，超时判据得改用聚合语句。</li>
+<li><b>单元判据对「没接线」天生免疫</b>：能力表若手写常量，Runner 没注册时单测一样全绿；只有 registry 接线真值 + 拆线负例抓得住。</li>
+</ul>
+
+<h3>12.5 当前基线与仍欠</h3>
+<p><b>基线</b>：58 条单测 · 真机 74 条（72 绿 / 2 条记账跳过）· dev + dist 双层 · 九个拆线负例 · CDP 抓包实证同源 <code>/pyodide/</code> 4 条、外部 0 条 · 首屏 14.97 KiB。</p>
+<p><b>仍欠</b>：第三方 Python 包（需预置自托管 wasm wheel 后才开放）· Python 无 allocator 内存上限 · UI 未暴露 stdin 输入框 · 服务端 Piston runner 已写但默认不注册 · Ruby/PHP/C 系未接 · 判分链路未接（客户端结果不可信，必须服务端再跑一遍）。</p>
+
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）</div>
 </div>
 </body>
 </html>

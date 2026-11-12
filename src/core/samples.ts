@@ -137,6 +137,28 @@ SELECT sqlite_version() AS sqlite, '中文标记' AS label, NULL AS "nothing";
     ],
     hint: '跑在独立 module Worker 里（sql.js 1.16.0 / SQLite 3.54），wasm 自托管不走 CDN；附加 .sql 文件作初始化脚本。无 allocator 内存上限，只有墙钟 + 输出字节 + 行数上限。',
   },
+  python: {
+    files: [
+      {
+        name: 'main.py',
+        content: `# CPython 3.14 · Pyodide WASM（core 分发自托管，不走 CDN）
+import json
+import statistics
+
+nums = [1, 2, 3, 4, 5]
+print('你好，playground')
+print('sum =', sum(nums), 'mean =', statistics.mean(nums))
+print('json =', json.dumps({'城市': '昆明', 'nums': nums}, ensure_ascii=False))
+
+# input() 读的是契约注入的 stdin（UI 暂未暴露输入框，自检里已验过多行读回）。
+# 再加一个 .py 文件会挂到 /pg/，可以 import helper。
+# 首版只有标准库：core 分发没有 wheel / micropip，import 第三方包会给可读错误，绝不外联。
+sum(nums) * 2
+`,
+      },
+    ],
+    hint: '跑在独立 module Worker 里（Pyodide 314.0.7 / CPython 3.14.2），core 分发自托管不走 CDN；仅标准库，第三方包需预置 wasm wheel。无网络 / socket / threading / 子进程。',
+  },
   css: {
     files: [
       {

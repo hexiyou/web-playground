@@ -68,6 +68,15 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     nativeApis: ['SQLite 3.54（WASM）', '同一次运行内多语句共享 DB', '附加 .sql 文件作初始化脚本'],
     serverLanguage: 'sqlite3',
   },
+  {
+    lang: 'python',
+    label: 'Python',
+    extensions: ['py'],
+    browserSandbox: 'worker',
+    switchable: ['worker'],
+    nativeApis: ['CPython 3.14（WASM）', 'Python 标准库（python_stdlib.zip）', '附加 .py 文件挂内存 FS 可 import'],
+    serverLanguage: 'python',
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

@@ -43,6 +43,7 @@ const FILE_NAMES: Record<LangId, string> = {
   css: 'style.css',
   lua: 'main.lua',
   sql: 'main.sql',
+  python: 'main.py',
 };
 
 function fileName(lang: LangId): string {
@@ -350,6 +351,95 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     pass('sql/no-memory-cap', 'sql', '没有 allocator 上限就不谎报内存用量',
       (r.probes?.memoryCapability ?? '').includes('no-allocator-cap') && r.usage?.memoryBytes === undefined,
       `memoryCapability=${r.probes?.memoryCapability ?? ''} usageMemory=${String(r.usage?.memoryBytes)}`);
+  }
+
+  // ---------- Python（Pyodide 314.0.7 / CPython 3.14.2 WASM / module Worker） ----------
+  {
+    let r = await run('python', `print('标准输出标记', 42, True)`);
+    pass('python/stdout', 'python', 'print 多参数回传',
+      r.status === 'ok' && text(r).includes('标准输出标记 42 True'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    // 引擎复用是可计数的量：第二次运行不该重新下载/实例化 9.6 MB wasm。
+    r = await run('python', `print('复用标记')`);
+    pass('python/engine-reuse', 'python', '引擎复用，不重下 9.6 MB wasm',
+      r.status === 'ok' && r.probes?.engineReused === '1' && text(r).includes('复用标记'),
+      `status=${r.status} engineReused=${r.probes?.engineReused ?? '无'} bootMs=${r.probes?.bootMs ?? '无'}`);
+
+    r = await run('python', `print('中文标记：昆明')`);
+    pass('python/utf8', 'python', '中文 UTF-8 往返',
+      r.status === 'ok' && text(r).includes('中文标记：昆明'), `status=${r.status} ${text(r).slice(0, 120)}`);
+
+    r = await run('python', `import sys\nsys.stderr.write('stderr 标记\\n')`);
+    pass('python/stderr', 'python', 'sys.stderr 单独成流',
+      r.status === 'ok' && hasStderr(r) && text(r).includes('stderr 标记'),
+      `status=${r.status} stderr=${hasStderr(r)}`);
+
+    r = await run('python', `a = input(); b = input(); print('IN:' + a + '/' + b)`, {
+      stdin: '第一行\n第二行\n',
+    });
+    pass('python/stdin', 'python', 'input() 多行读回注入的 stdin',
+      r.status === 'ok' && text(r).includes('IN:第一行/第二行'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('python', `import json, statistics\nprint('MEAN:' + str(statistics.mean([1, 2, 3])))\nprint(json.dumps({'城市': '昆明'}, ensure_ascii=False))`);
+    pass('python/stdlib', 'python', '标准库 import 与中文 JSON',
+      r.status === 'ok' && text(r).includes('MEAN:2') && text(r).includes('昆明'),
+      `status=${r.status} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('python', `2 + 3`);
+    pass('python/return', 'python', '顶层表达式返回值回显',
+      r.status === 'ok' && text(r).includes('-- 返回值：5'), `status=${r.status} ${text(r).slice(0, 120)}`);
+
+    const helperMain = `import helper\nprint('MULTI:' + str(helper.twice(21)))`;
+    r = await run('python', helperMain, {
+      files: [
+        { name: 'main.py', content: helperMain },
+        { name: 'helper.py', content: `def twice(n):\n    return n * 2\n` },
+      ],
+    });
+    pass('python/multi-file', 'python', '附加 .py 挂内存 FS 并可 import',
+      r.status === 'ok' && text(r).includes('MULTI:42') && r.probes?.filesMounted === '1',
+      `status=${r.status} filesMounted=${r.probes?.filesMounted ?? '无'} 输出=${JSON.stringify(text(r).slice(0, 160))}`);
+
+    r = await run('python', `def broken(:`);
+    pass('python/syntax-error', 'python', '语法错误可观察',
+      r.status === 'error' && hasStderr(r), `status=${r.status} stderr=${hasStderr(r)}`);
+
+    r = await run('python', `raise ValueError('刻意报错标记')`);
+    pass('python/runtime-error', 'python', '运行时异常带完整 traceback',
+      r.status === 'error' && hasStderr(r) && text(r).includes('刻意报错标记'),
+      `status=${r.status} stderr=${hasStderr(r)}`);
+
+    // 首版只有标准库。这条押「给一句人话 + 明确不外联」，不是押「没抛错」。
+    // 真正的零外联证据在 smoke.mjs 的 CDP 网络守卫里（按已知包仓库域名判红）。
+    r = await run('python', `import numpy as np\nprint(np)`);
+    const diag = r.diagnostics.map((d) => d.message).join(' | ');
+    pass('python/missing-package', 'python', '第三方包给可读错误且不装包',
+      r.status === 'error' && diag.includes('numpy') && diag.includes('不会向 CDN'),
+      `status=${r.status} 诊断=${diag.slice(0, 180)}`);
+
+    r = await run('python', `print('x' * 100000)`, { outputBytes: 512 });
+    pass('python/output-limit', 'python', '输出字节触顶停回传',
+      r.status === 'output-limit' && r.probes?.outputLimited === '1',
+      `status=${r.status} outputLimited=${r.probes?.outputLimited ?? '无'}`);
+
+    r = await run('python', `import sys\nprint('VERSION:' + sys.version.split()[0])`);
+    const wasmSource = r.probes?.wasmSource ?? '';
+    const indexURL = r.probes?.indexURL ?? '';
+    pass('python/selfhost', 'python', 'core 四件套同源自托管 + 版本/能力如实登记',
+      r.probes?.pyodideVersion === '314.0.7' &&
+        /^3\.14/.test(r.probes?.pythonVersion ?? '') &&
+        isSelfHostedWasm(wasmSource, location.origin) &&
+        isSelfHostedWasm(indexURL, location.origin) &&
+        (r.probes?.packageCapability ?? '').includes('stdlib-only') &&
+        text(r).includes('VERSION:3.14'),
+      `ver=${r.probes?.pyodideVersion}/${r.probes?.pythonVersion} wasm=${wasmSource} cap=${(r.probes?.packageCapability ?? '').slice(0, 40)}`);
+
+    // 必须放最后：terminate 会清空复用的引擎，后面的默认示例判据会重新 boot。
+    r = await run('python', `while True:\n    pass`, { wallMs: 600 });
+    pass('python/infinite-loop', 'python', '同步死循环被 Worker 终止',
+      r.status === 'timeout' && r.timedOut, `status=${r.status} timedOut=${r.timedOut} ${r.durationMs}ms`);
   }
 
   // ---------- 默认示例：用户打开页面点「运行」看到的第一份代码 ----------

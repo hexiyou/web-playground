@@ -21,7 +21,7 @@ function fakeRunner(lang: LangId, target: ExecTarget = 'browser', enabled = true
 /** 合成注册表用于验证「拆一门只红一门」的推导逻辑。 */
 function synthetic(): RunnerRegistry {
   const reg = new RunnerRegistry();
-  for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua', 'sql'] as LangId[]) {
+  for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua', 'sql', 'python'] as LangId[]) {
     reg.register(fakeRunner(lang));
   }
   return reg;
@@ -87,6 +87,21 @@ describe('能力表由接线层推导', () => {
     for (const b of before) {
       if (b.lang === 'sql') continue;
       expect(capabilityFor(after, b.lang).available, `${b.lang} 不该受 SQL 拆线影响`).toBe(b.available);
+    }
+    expect(validateWiring(reg, after)).toEqual([]);
+  });
+
+  it('拆掉 Python runner，只有 Python 置灰（WASM 语言按门接线）', () => {
+    const reg = createRegistry(() => ({} as unknown as HTMLElement));
+    const before = deriveCapabilities(reg);
+    expect(reg.unregister('pyodide.cpython.wasm')).toBe(true);
+    const after = deriveCapabilities(reg);
+
+    expect(capabilityFor(after, 'python').available).toBe(false);
+    expect(capabilityFor(after, 'python').reason).toContain('未接线');
+    for (const b of before) {
+      if (b.lang === 'python') continue;
+      expect(capabilityFor(after, b.lang).available, `${b.lang} 不该受 Python 拆线影响`).toBe(b.available);
     }
     expect(validateWiring(reg, after)).toEqual([]);
   });

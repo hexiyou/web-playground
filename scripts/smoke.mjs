@@ -80,6 +80,13 @@ async function main() {
       '--no-default-browser-check',
       '--disable-gpu',
       '--no-sandbox',
+      // 关掉浏览器自身的后台联网，免得 CDP 网络守卫把 Edge 的遥测/组件更新
+      // 误判成 playground 发出的外部请求。
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+      '--disable-sync',
+      '--no-pings',
       'about:blank',
     ],
     { stdio: 'ignore', windowsHide: true },
@@ -107,6 +114,8 @@ async function main() {
 
     let msgId = 0;
     const pending = new Map();
+    const localUrls = new Set();
+    const externalUrls = new Set();
     ws.addEventListener('message', (ev) => {
       const data = JSON.parse(String(ev.data));
       if (data.id && pending.has(data.id)) {
@@ -114,15 +123,33 @@ async function main() {
         pending.delete(data.id);
         resolve(data);
       }
+      // 网络守卫：probes 里的 URL 只是「代码声称从哪加载」，这里看真实发出的请求。
+      // Pyodide 是第一个可能偷偷回退到 CDN 拉 wheel 的运行时，必须有这一层硬证据。
+      if (data.method === 'Network.requestWillBeSent') {
+        const url = String(data.params?.request?.url ?? '');
+        if (/^https?:/i.test(url)) {
+          (url.startsWith(BASE) ? localUrls : externalUrls).add(url);
+        }
+      }
+      // module Worker 有独立 target：只在 page session 上 Network.enable 收不到
+      // 它的请求，那时「外部请求 0 条」是空证据而不是零外联。flatten 自动挂上
+      // worker session 后逐个别忘再 enable 一次。
+      if (data.method === 'Target.attachedToTarget') {
+        const sid = String(data.params?.sessionId ?? '');
+        if (sid) void send('Network.enable', {}, sid);
+      }
     });
-    const send = (method, params = {}) =>
+    const send = (method, params = {}, sessionId) =>
       new Promise((resolve) => {
         const id = ++msgId;
         pending.set(id, { resolve });
-        ws.send(JSON.stringify({ id, method, params }));
+        ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
       });
 
     await send('Runtime.enable');
+    await send('Network.enable');
+    await send('Target.setDiscoverTargets', { discover: true });
+    await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
     const expr = 'window.__PLAYGROUND_SELFTEST__ ? JSON.stringify(window.__PLAYGROUND_SELFTEST__) : null';
     let report = null;
     const deadline = Date.now() + 90000;
@@ -144,11 +171,40 @@ async function main() {
     for (const a of report.assertions) {
       if (a.status === 'fail') console.log(`  [FAIL] ${a.id} ${a.name} — ${a.detail}`);
     }
-    if (report.failed === 0 && report.ok) {
-      console.log('[真机自检] 全绿：Worker / iframe / TS 转译 / 能力表接线都在真浏览器里跑通');
+    // 已知公共包仓库：出现任意一条都说明运行时绕过了自托管资产。
+    const PACKAGE_CDNS =
+      /cdn\.jsdelivr\.net|jsdelivr|unpkg\.com|cdnjs|pypi\.org|files\.pythonhosted\.org|pyodide\.org|fastly\.net/i;
+    const badRequests = [...externalUrls].filter((u) => PACKAGE_CDNS.test(u));
+    const pyodideAssets = [...localUrls].filter((u) => u.includes('/pyodide/'));
+    console.log(
+      `[网络守卫] 同源请求 ${localUrls.size} 条（其中 /pyodide/ 资产 ${pyodideAssets.length} 条）· 外部请求 ${externalUrls.size} 条`,
+    );
+    if (externalUrls.size > 0) {
+      console.log(`[网络守卫] 外部域名样本：${[...externalUrls].slice(0, 3).join(' , ')}`);
+    }
+    // 必须真的抓到 worker 的 /pyodide/ 资产请求，守卫才算「押到了对象」。
+    // 否则「外部 0 条」可能只是压根没监听到 worker，属于静默空证据。
+    const evidence = pyodideAssets.length >= 3;
+    const networkOk = badRequests.length === 0 && evidence;
+    if (!evidence) {
+      console.error(
+        `[网络守卫] 只抓到 ${pyodideAssets.length} 条 /pyodide/ 资产请求（应 ≥3），` +
+          'worker target 可能没挂上，此时「零外部请求」不能作数',
+      );
+    }
+    if (networkOk) {
+      console.log('[网络守卫] 零包仓库请求：Pyodide 全程只读同源自托管资产');
+    } else if (badRequests.length > 0) {
+      console.error(`[网络守卫] 检测到向公共包仓库的请求，自托管失效：${badRequests.slice(0, 3).join(' , ')}`);
+    }
+
+    if (report.failed === 0 && report.ok && networkOk) {
+      console.log('[真机自检] 全绿：Worker / iframe / TS 转译 / 能力表接线 / 零外联都在真浏览器里跑通');
       verdict = 0;
     } else {
-      console.error('[真机自检] 有红，见上方 FAIL 明细');
+      if (report.failed !== 0 || !report.ok) console.error('[真机自检] 有红，见上方 FAIL 明细');
+      if (!networkOk) console.error('[真机自检] 网络守卫未通过');
+      verdict = 1;
     }
   } catch (err) {
     console.error('[真机自检] 执行异常：', err.message || err);

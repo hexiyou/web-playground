@@ -9,5 +9,8 @@ dist/
 .smoke-lua-report.json
 .smoke-sql-report.json
 .smoke-sample-report.json
+.smoke-python-report.json
+.negative-python-report.json
+public/pyodide/
 *.log
 .DS_Store
