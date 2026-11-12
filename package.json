@@ -1,6 +1,6 @@
 {
   "name": "team-playground",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "浏览器端代码片段快速验证 playground · 契约先行，服务端执行可插拔",
@@ -8,6 +8,7 @@
     "postinstall": "node scripts/sync-pyodide.mjs",
     "sync:pyodide": "node scripts/sync-pyodide.mjs --force",
     "dev": "vite",
+    "server": "node scripts/local-server.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -16,6 +17,7 @@
     "negative:lua": "node scripts/negative-lua.mjs",
     "negative:sql": "node scripts/negative-sql.mjs",
     "negative:python": "node scripts/negative-python.mjs",
+    "negative:go": "node scripts/negative-go.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:preview": "npm run build && node scripts/smoke.mjs --preview",
     "smoke:negative": "node scripts/smoke-negative.mjs",
@@ -23,6 +25,7 @@
     "smoke:negative:sql": "node scripts/smoke-sql-negative.mjs",
     "smoke:negative:sample": "node scripts/smoke-sample-negative.mjs",
     "smoke:negative:python": "node scripts/smoke-python-negative.mjs",
+    "smoke:negative:go": "node scripts/smoke-go-negative.mjs",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-import type { BrowserSandbox, Capability, ExecTarget, LangId } from './contract';
+import type { BrowserSandbox, Capability, ExecTarget, IsolationLevel, LangId, TrustLevel } from './contract';
 import type { RunnerRegistry } from './registry';
 
 export interface LangDef {
@@ -9,10 +9,13 @@ export interface LangDef {
   switchable: BrowserSandbox[];
   /** 只有浏览器才有的语义，用于解释为什么 A 层不能砍 */
   nativeApis: string[];
-  /** 后期接 Piston 时的 language 名，先登记，不接线 */
-  serverLanguage: string;
 }
 
+/**
+ * v0.5 抽掉的接缝：语言元数据里不再写「服务端 language 名」。
+ * `file` / `sqlite3` 这类是 Piston 专有命名，A′ 用本机可执行名（go / Rscript…），
+ * 写死在 LANG_DEFS 会让换后端时连语言登记层都要返工。现在各 runner 自带映射表。
+ */
 export const LANG_DEFS: readonly LangDef[] = Object.freeze([
   {
     lang: 'javascript',
@@ -21,7 +24,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'worker',
     switchable: ['worker', 'iframe'],
     nativeApis: ['console', 'DOM（iframe 模式）', 'fetch（iframe 模式）'],
-    serverLanguage: 'javascript',
   },
   {
     lang: 'typescript',
@@ -30,7 +32,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'worker',
     switchable: ['worker', 'iframe'],
     nativeApis: ['console', 'DOM（iframe 模式）'],
-    serverLanguage: 'typescript',
   },
   {
     lang: 'html',
@@ -39,7 +40,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'iframe',
     switchable: ['iframe'],
     nativeApis: ['DOM', 'CSS', 'inline script', '事件'],
-    serverLanguage: 'file',
   },
   {
     lang: 'css',
@@ -48,7 +48,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'iframe',
     switchable: ['iframe'],
     nativeApis: ['布局', '级联', 'computed style'],
-    serverLanguage: 'file',
   },
   {
     lang: 'lua',
@@ -57,7 +56,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'worker',
     switchable: ['worker'],
     nativeApis: ['Lua 5.4 标准库（WASM）', 'io.read 走注入的 stdin', 'dofile 走内存 FS'],
-    serverLanguage: 'lua',
   },
   {
     lang: 'sql',
@@ -66,7 +64,6 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'worker',
     switchable: ['worker'],
     nativeApis: ['SQLite 3.54（WASM）', '同一次运行内多语句共享 DB', '附加 .sql 文件作初始化脚本'],
-    serverLanguage: 'sqlite3',
   },
   {
     lang: 'python',
@@ -75,7 +72,15 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     browserSandbox: 'worker',
     switchable: ['worker'],
     nativeApis: ['CPython 3.14（WASM）', 'Python 标准库（python_stdlib.zip）', '附加 .py 文件挂内存 FS 可 import'],
-    serverLanguage: 'python',
+  },
+  {
+    lang: 'go',
+    label: 'Go',
+    extensions: ['go'],
+    // 纯服务端语言：没有 browser runner，switchable 为空，UI 会把载体下拉置灰。
+    browserSandbox: 'worker',
+    switchable: [],
+    nativeApis: ['（仅服务端执行）', '本机 Go 工具链 · go build + 运行两阶段', '仅标准库，GOPROXY=off'],
   },
 ]);
 
@@ -88,6 +93,9 @@ export function langDef(lang: LangId): LangDef {
 /**
  * 能力表由注册表推导，不手写「我以为能用」。
  * targets 为空 = 未接线，UI 必须置灰。这是防止「单测全绿但功能没接线」的结构性手段。
+ *
+ * ★ trusted 只认 runner 声明的 trust，不认 target：A′ 也是 server，但只有进程级隔离，
+ *   结果不可用于判分。按位置猜信任档会让能力表撒谎。
  */
 export function deriveCapabilities(reg: RunnerRegistry): Capability[] {
   return LANG_DEFS.map((def) => {
@@ -99,6 +107,12 @@ export function deriveCapabilities(reg: RunnerRegistry): Capability[] {
         ? 'server'
         : null;
     const available = targets.length > 0;
+    const isolation: IsolationLevel[] = [...new Set(wired.map((r) => r.isolation ?? 'browser'))];
+    const trust: TrustLevel | null = wired.length === 0
+      ? null
+      : wired.some((r) => r.trust === 'graded')
+        ? 'graded'
+        : 'advisory';
 
     return {
       lang: def.lang,
@@ -108,7 +122,9 @@ export function deriveCapabilities(reg: RunnerRegistry): Capability[] {
       prefer,
       available,
       offline: targets.includes('browser'),
-      trusted: targets.includes('server'),
+      trusted: trust === 'graded',
+      isolation,
+      trust,
       browserSandbox: def.browserSandbox,
       switchable: [...def.switchable],
       nativeApis: [...def.nativeApis],

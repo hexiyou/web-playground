@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startLocalServer, BASE as SERVER_BASE } from './local-server.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const PORT = Number(process.env.PLAYGROUND_PORT || 5188);
@@ -22,6 +23,8 @@ const MODE =
 const REPORT_FILE = process.env.PLAYGROUND_REPORT_FILE || '';
 const BASE = `http://127.0.0.1:${PORT}`;
 const TARGET = `${BASE}/?selftest=1`;
+/** 本地执行节点是另一个端口，但它同样是「本地」，不能被算成外部请求。 */
+const LOCAL_ORIGINS = [BASE, SERVER_BASE];
 
 const CANDIDATES = [
   process.env.PLAYGROUND_BROWSER,
@@ -59,6 +62,11 @@ async function main() {
   const exe = pickBrowser();
   const viteBin = join(root, 'node_modules', 'vite', 'bin', 'vite.js');
   if (!existsSync(viteBin)) throw new Error('先执行 npm install');
+
+  // Go 只在 server 位置能跑，真机自检必须真有一个 A′ 执行节点在线；
+  // 已在线则复用，不误杀何工手动开着的那个。
+  const server = await startLocalServer();
+  console.log(`[执行节点] ${server.started ? '已拉起' : '复用已在线'} A′ 节点 ${SERVER_BASE}`);
 
   // dev 与 preview 走同一套判据：dev 证明能开发，preview 证明 dist 产物里
   // glue.wasm 的 /assets/ 路径与 module Worker 也能跑（dev 路径完全不同）。
@@ -128,7 +136,7 @@ async function main() {
       if (data.method === 'Network.requestWillBeSent') {
         const url = String(data.params?.request?.url ?? '');
         if (/^https?:/i.test(url)) {
-          (url.startsWith(BASE) ? localUrls : externalUrls).add(url);
+          (LOCAL_ORIGINS.some((o) => url.startsWith(o)) ? localUrls : externalUrls).add(url);
         }
       }
       // module Worker 有独立 target：只在 page session 上 Network.enable 收不到
@@ -152,7 +160,8 @@ async function main() {
     await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
     const expr = 'window.__PLAYGROUND_SELFTEST__ ? JSON.stringify(window.__PLAYGROUND_SELFTEST__) : null';
     let report = null;
-    const deadline = Date.now() + 90000;
+    // Go 每次执行都要 go build（本机约 1.5s，冷编译更久），窗口比 v0.4 放宽。
+    const deadline = Date.now() + 150000;
     while (Date.now() < deadline) {
       const reply = await send('Runtime.evaluate', { expression: expr, returnByValue: true });
       const value = reply?.result?.result?.value;
@@ -163,7 +172,7 @@ async function main() {
       await sleep(300);
     }
 
-    if (!report) throw new Error('90 秒内页面没有产出自检报告');
+    if (!report) throw new Error('150 秒内页面没有产出自检报告');
 
     if (REPORT_FILE) writeFileSync(REPORT_FILE, JSON.stringify(report, null, 2));
     console.log(`[真机自检] 模式 ${MODE} · 通过 ${report.passed} · 失败 ${report.failed} · 记账跳过 ${report.skipped} · 共 ${report.assertions.length} 条`);
@@ -176,20 +185,31 @@ async function main() {
       /cdn\.jsdelivr\.net|jsdelivr|unpkg\.com|cdnjs|pypi\.org|files\.pythonhosted\.org|pyodide\.org|fastly\.net/i;
     const badRequests = [...externalUrls].filter((u) => PACKAGE_CDNS.test(u));
     const pyodideAssets = [...localUrls].filter((u) => u.includes('/pyodide/'));
+    const serverCalls = [...localUrls].filter((u) => u.includes('/api/v2/'));
     console.log(
-      `[网络守卫] 同源请求 ${localUrls.size} 条（其中 /pyodide/ 资产 ${pyodideAssets.length} 条）· 外部请求 ${externalUrls.size} 条`,
+      `[网络守卫] 同源请求 ${localUrls.size} 条（/pyodide/ 资产 ${pyodideAssets.length} 条 · 本地节点 /api/v2/ ${serverCalls.length} 条）· 外部请求 ${externalUrls.size} 条`,
     );
     if (externalUrls.size > 0) {
       console.log(`[网络守卫] 外部域名样本：${[...externalUrls].slice(0, 3).join(' , ')}`);
     }
     // 必须真的抓到 worker 的 /pyodide/ 资产请求，守卫才算「押到了对象」。
     // 否则「外部 0 条」可能只是压根没监听到 worker，属于静默空证据。
-    const evidence = pyodideAssets.length >= 3;
+    // ★ 服务端通路同理：只有抓到真实的 /api/v2/ 请求，才能证明 Go 真的走了本地执行节点，
+    //   而不是 probes 里自述一句 isolation=process-only。
+    const pyodideEvidence = pyodideAssets.length >= 3;
+    const serverEvidence = serverCalls.length >= 2;
+    const evidence = pyodideEvidence && serverEvidence;
     const networkOk = badRequests.length === 0 && evidence;
-    if (!evidence) {
+    if (!pyodideEvidence) {
       console.error(
         `[网络守卫] 只抓到 ${pyodideAssets.length} 条 /pyodide/ 资产请求（应 ≥3），` +
           'worker target 可能没挂上，此时「零外部请求」不能作数',
+      );
+    }
+    if (!serverEvidence) {
+      console.error(
+        `[网络守卫] 只抓到 ${serverCalls.length} 条 /api/v2/ 请求（应 ≥2），` +
+          'Go 的服务端通路可能没真跑起来，判据不能只信页面自述',
       );
     }
     if (networkOk) {
@@ -212,6 +232,7 @@ async function main() {
     if (ws) ws.close();
     browser.kill();
     vite.kill();
+    await server.stop();
   }
   process.exitCode = verdict;
 }

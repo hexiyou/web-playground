@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { LANG_DEFS, deriveCapabilities, validateWiring, capabilityFor } from '../core/capabilities';
 import { RunnerRegistry } from '../core/registry';
-import { createRegistry } from '../runners';
-import type { ExecTarget, LangId, RunResult, Runner } from '../core/contract';
+import { createRegistry, createLocalRunner, createPistonRunner } from '../runners';
+import type { ExecTarget, LangId, RunResult, Runner, TrustLevel } from '../core/contract';
 import { newResult } from '../core/result';
 
-function fakeRunner(lang: LangId, target: ExecTarget = 'browser', enabled = true): Runner {
+function fakeRunner(
+  lang: LangId,
+  target: ExecTarget = 'browser',
+  enabled = true,
+  trust: TrustLevel = 'advisory',
+): Runner {
   return {
     id: `fake.${lang}.${target}`,
     target,
     languages: [lang],
     enabled,
+    isolation: target === 'server' ? 'process-only' : 'browser',
+    trust,
     priority: 1,
     async run(): Promise<RunResult> {
       return newResult({ requestId: 'x', language: lang, target, engine: 'fake' });
@@ -24,15 +31,21 @@ function synthetic(): RunnerRegistry {
   for (const lang of ['javascript', 'typescript', 'html', 'css', 'lua', 'sql', 'python'] as LangId[]) {
     reg.register(fakeRunner(lang));
   }
+  reg.register(fakeRunner('go', 'server'));
   return reg;
 }
 
 describe('能力表由接线层推导', () => {
-  it('接线真值：全部语言都已接线且只报 browser', () => {
+  it('接线真值：浏览器七门已接线；Go 未注入服务端 runner 时如实置灰', () => {
     const reg = createRegistry(() => ({} as unknown as HTMLElement));
     const caps = deriveCapabilities(reg);
     expect(caps).toHaveLength(LANG_DEFS.length);
     for (const cap of caps) {
+      if (cap.lang === 'go') {
+        expect(cap.available, '纯服务端语言没注入 runner 就不能谎报可用').toBe(false);
+        expect(cap.reason).toContain('未接线');
+        continue;
+      }
       expect(cap.available, `${cap.lang} 应当可用`).toBe(true);
       expect(cap.targets).toEqual(['browser']);
       expect(cap.prefer).toBe('browser');
@@ -122,12 +135,45 @@ describe('能力表由接线层推导', () => {
     expect(validateWiring(reg, caps)).toEqual([]);
   });
 
-  it('接上 server runner 后才报 trusted，且 prefer 仍是 browser', () => {
+  it('接上 graded 的 server runner 后才报 trusted，且 prefer 仍是 browser', () => {
     const reg = synthetic();
-    reg.register(fakeRunner('javascript', 'server'));
+    reg.register(fakeRunner('javascript', 'server', true, 'graded'));
     const cap = capabilityFor(deriveCapabilities(reg), 'javascript');
     expect(cap.targets).toEqual(['browser', 'server']);
     expect(cap.trusted).toBe(true);
     expect(cap.prefer).toBe('browser');
+  });
+
+  it('★ 接缝：A′ 是 server 但 advisory，绝不因 target 被误判为可判分', () => {
+    const reg = createRegistry(() => ({} as unknown as HTMLElement), [
+      createLocalRunner({ baseUrl: 'http://127.0.0.1:2000' }),
+    ]);
+    const caps = deriveCapabilities(reg);
+    const go = capabilityFor(caps, 'go');
+    expect(go.available).toBe(true);
+    expect(go.targets).toEqual(['server']);
+    expect(go.prefer).toBe('server');
+    expect(go.trusted).toBe(false);
+    expect(go.trust).toBe('advisory');
+    expect(go.isolation).toEqual(['process-only']);
+    expect(go.offline).toBe(false);
+    // 同一注册表里浏览器七门的信任档不能被服务端 runner 带偏
+    expect(capabilityFor(caps, 'javascript').trusted).toBe(false);
+    expect(validateWiring(reg, caps)).toEqual([]);
+  });
+
+  it('官方 Piston runner 注入后才报 kernel / graded', () => {
+    const reg = createRegistry(() => ({} as unknown as HTMLElement), [
+      createPistonRunner({
+        baseUrl: 'http://127.0.0.1:2000',
+        versions: { go: '1.27.0' },
+        timeoutMs: 3000,
+        enabled: true,
+      }),
+    ]);
+    const cap = capabilityFor(deriveCapabilities(reg), 'go');
+    expect(cap.trusted).toBe(true);
+    expect(cap.trust).toBe('graded');
+    expect(cap.isolation).toEqual(['kernel']);
   });
 });

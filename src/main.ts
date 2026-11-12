@@ -17,7 +17,7 @@ import type {
   RunResult,
 } from './core/contract';
 import type { ExecuteHandle } from './core/execute';
-import { createRegistry } from './runners';
+import { createRegistry, createLocalRunner } from './runners';
 
 function $<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -42,7 +42,17 @@ const capsBody = $<HTMLTableElement>('caps').tBodies[0];
 const wiringEl = $<HTMLDivElement>('wiring');
 const selftestEl = $<HTMLDivElement>('selftest');
 
-const registry = createRegistry(() => previewEl);
+/**
+ * v0.5：服务端 runner 由调用方注入实例。默认接 A′ 本机进程节点（非 Docker），
+ * 将来切官方 Piston 只需把这一行换成 createPistonRunner({...})，其余零改动。
+ * 可用 ?server=<url>&token=<token> 覆盖，方便 dev/dist 两层与手动联调。
+ */
+const qs = new URLSearchParams(location.search);
+const serverUrl = qs.get('server') || 'http://127.0.0.1:2000';
+const serverToken = qs.get('token') || 'pg-local-dev-token';
+const registry = createRegistry(() => previewEl, [
+  createLocalRunner({ baseUrl: serverUrl, token: serverToken }),
+]);
 let capabilities: Capability[] = deriveCapabilities(registry);
 
 const buffers = new Map<LangId, string>(
@@ -66,6 +76,8 @@ function renderTruth(): void {
       cap.targets.join(' / ') || '无',
       cap.prefer ?? '无',
       cap.offline ? '是' : '否',
+      cap.isolation.join(' / ') || '无',
+      cap.trust === 'graded' ? 'graded（可判分）' : cap.trust === 'advisory' ? 'advisory（仅参考）' : '无',
       cap.trusted ? '是' : '否',
       '',
     ];
@@ -108,6 +120,16 @@ function renderLangOptions(): void {
 function renderSandboxOptions(): void {
   const cap = currentCap();
   sandboxSel.replaceChildren();
+  // 纯服务端语言（Go）没有浏览器载体，如实显示「仅服务端」而不是伪造 Worker/iframe 选项。
+  if (cap.switchable.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '仅服务端';
+    sandboxSel.appendChild(opt);
+    sandboxSel.value = '';
+    sandboxSel.disabled = true;
+    return;
+  }
   for (const s of cap.switchable) {
     const opt = document.createElement('option');
     opt.value = s;
@@ -155,6 +177,13 @@ async function languageExtension(lang: LangId) {
   if (lang === 'python') {
     const { python } = await import('@codemirror/lang-python');
     return python();
+  }
+  if (lang === 'go') {
+    const [{ StreamLanguage }, { go }] = await Promise.all([
+      import('@codemirror/language'),
+      import('@codemirror/legacy-modes/mode/go'),
+    ]);
+    return StreamLanguage.define(go);
   }
   const { css } = await import('@codemirror/lang-css');
   return css();

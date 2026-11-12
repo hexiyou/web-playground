@@ -59,7 +59,8 @@
   <b>一句话结论</b><br>
   最佳实践不是「选一个运行时把所有语言塞进浏览器」，而是<b>一套统一的 Runner 契约 + 一张能力表（CapFlag）+ 三类可插拔执行后端</b>：能在浏览器里跑的（JS/TS、Python、Lua、SQL、Ruby、PHP、R、C/C++/Go 编译链）走本地 WASM，跑不了的（Rust、C#、Kotlin、Swift、Bash、原生依赖、真实网络/数据库、需要可信判分）走服务端沙箱。前端只负责编辑、调度、输出呈现，<b>永远不要为某门语言在主流程里开特例</b>。<br>
   <span class="small">2026-11-11 补：<b>第十一章</b>回答「能否只留 A + 服务端」——答案是 B/C 可以全砍、A 不能砍，且服务端沙箱要按三档隔离重新选型。</span><br>
-  <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span>
+  <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span><br>
+  <span class="small">2026-11-12 再补：<b>第十三章</b>记录一次<b>刻意与官方推荐分叉</b>的决策 —— 服务端改用非 Docker 的 A′ 本机进程节点（Go 优先），含威胁模型、回切条件、三处防返工接缝与官方部署真值，<b>时间久了别忘为什么</b>。</span>
 </div>
 
 <div class="toc">
@@ -74,7 +75,8 @@
   <a href="#s9">九、坑清单</a><br>
   <a href="#s10">十、数据来源与口径声明</a><br>
   <a href="#s11">十一、专题：能否只留「A 原生 + 服务端」</a><br>
-  <a href="#s12">十二、落地实测：三门 WASM 的真实接线账</a>
+  <a href="#s12">十二、落地实测：三门 WASM 的真实接线账</a><br>
+  <a href="#s13">十三、决策分叉：A′ 非 Docker 路线 vs 官方 Docker 推荐</a>
 </div>
 
 <h2 id="s1">一、三种体积口径（最容易算错的地方）</h2>
@@ -531,7 +533,71 @@ interface Capability {
 <p><b>基线</b>：58 条单测 · 真机 74 条（72 绿 / 2 条记账跳过）· dev + dist 双层 · 九个拆线负例 · CDP 抓包实证同源 <code>/pyodide/</code> 4 条、外部 0 条 · 首屏 14.97 KiB。</p>
 <p><b>仍欠</b>：第三方 Python 包（需预置自托管 wasm wheel 后才开放）· Python 无 allocator 内存上限 · UI 未暴露 stdin 输入框 · 服务端 Piston runner 已写但默认不注册 · Ruby/PHP/C 系未接 · 判分链路未接（客户端结果不可信，必须服务端再跑一遍）。</p>
 
-<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）</div>
+<h2 id="s13">十三、决策分叉：A′ 非 Docker 路线 vs 官方 Docker 推荐（v0.5）</h2>
+
+<div class="callout warn">
+  <b>这一章专门写给「时间长了以后忘了为什么」的自己</b><br>
+  官方 Piston 的推荐部署是 <code>docker run --privileged</code> + 纯 cgroup v2 + Linux。
+  本项目 v0.5 <b>刻意不这么做</b>，改用 Go 单二进制的本地进程执行节点（A′）。
+  这不是「先凑合、以后再改」，而是<b>威胁模型不同</b>：团队内几个人验证自己写的可信片段，
+  不需要内核级隔离。但只要出现「对公网开放 / 跑不可信代码 / 结果用于判分」任一条，
+  <b>必须回切官方方案</b>，不能靠给 A′ 加个 token 就把它当沙箱用。
+</div>
+
+<h3>13.1 官方真值（2026-11-12 按一手来源核对，别信二手博客）</h3>
+<ul>
+<li>官方 <code>readme.md</code> 的 Host System Package Dependencies 明写 <b>Docker / Docker Compose / Node ≥15 / cgroup v2 开启且 v1 关闭</b>；「Just Piston (no CLI)」也要 Docker，命令是 <code>docker run --privileged ... ghcr.io/engineer-man/piston</code>；<code>docker-compose.yaml</code> 里 <code>privileged: true</code>。</li>
+<li>原理原文：<code>Piston uses <b>Isolate inside Docker</b></code>，隔离靠 Linux namespaces / chroot / 多个非特权 uid / cgroup。<code>api/src/docker-entrypoint.sh</code> 会直接 <code>mkdir /sys/fs/cgroup/isolate</code>、写 <code>cgroup.procs</code> 与 <code>cgroup.subtree_control</code>，并显式拒绝 v1+v2 混合模式 —— 这就是它必须特权、必须 Linux 的原因。</li>
+<li><b>脱离 Docker：官方不支持</b>。Node API 是纯 JS、isolate 只是 <code>make install</code> 一个二进制，裸机理论可跑，但上面那段 cgroup 初始化在 systemd 主机会抢 cgroup 所有权，得改成 delegate，等于维护一份 fork。<b>跨平台：Linux 原生 ✓；Windows / macOS 只能借 Docker Desktop / WSL2 的 Linux VM 间接跑；Windows 原生 ✗</b>（内核原语不存在）。</li>
+<li>搜索引擎里有中文文章写「Piston 无 Docker 依赖、内核级沙箱」，与官方 README 直接冲突。<span class="k">裁判是官方条文，不是博客。</span></li>
+<li>公共 API 自 <b>2026-02-15</b> 起不再免费发 key，且明确不给个人项目 ⇒ 只能自建。</li>
+</ul>
+
+<h3>13.2 分叉依据：威胁模型，不是懒</h3>
+<table>
+<thead><tr><th></th><th>官方 Piston</th><th>本项目 A′（v0.5 起）</th></tr></thead>
+<tbody>
+<tr><td>面向</td><td>任意陌生人的恶意代码</td><td>团队内几个人、自己写的可信片段</td></tr>
+<tr><td>隔离</td><td>isolate 内核级 + Docker privileged</td><td>进程级：墙钟 / 输出字节 / 并发 / 每请求临时目录</td></tr>
+<tr><td>结果</td><td><code>graded</code>，可判分</td><td><b><code>advisory</code>，不可判分</b></td></tr>
+<tr><td>部署</td><td>Linux + Docker + cgroup v2 + root</td><td>Windows / Linux / macOS，Go 单二进制，零特权</td></tr>
+<tr><td>网络</td><td>默认禁 socket</td><td>编译期 <code>GOPROXY=off</code>；运行期不禁网络</td></tr>
+</tbody>
+</table>
+<p>A′ 的硬边界：<b>只绑 <code>127.0.0.1</code></b>（非回环地址拒绝启动）、<b>默认 token 只是开发口令不是安全边界</b>、<b>代码可信是前提</b>。节点没有内核隔离，用户代码能读本机文件、起子进程、联网。能力表如实登记 <code>isolation=process-only</code> / <code>trust=advisory</code>，<code>usage.memoryBytes</code> 不填（不拿 0 冒充用量）。</p>
+
+<h3>13.3 为「以后换回官方」预留的三处接缝</h3>
+<p>v0.5 开工第一刀不是写 Go，而是先把三处会逼人返工的硬编码抽掉。抽完之后，<b>换后端 = 换 <code>createRegistry()</code> 注入的那一行</b>，契约 / UI / 路由 / 能力表 / 执行收口 / 绝大多数判据零改动。</p>
+<ol>
+<li><code>ServerWiring</code> 曾硬绑 <code>PistonConfig</code> ⇒ 改成 <code>createRegistry(getMount, serverRunners: Runner[])</code>，由调用方注入实例。A′ 与官方 Piston 都只是「传一个 Runner 进去」。</li>
+<li><b><code>trusted = targets.includes('server')</code> 是会撒谎的推导</b> ⇒ 改为由 Runner 自己声明 <code>isolation</code> / <code>trust</code> 档位推导。A′ 也是 server，但只有 advisory；Piston 才是 kernel / graded。<code>capabilities.test.ts</code> 专门加了两条判据钉死这个区分。</li>
+<li><code>LANG_DEFS[].serverLanguage</code> 曾是 Piston 专有命名（<code>file</code> / <code>sqlite3</code>）⇒ 抽成各后端自有的 <code>languageMap</code>：<code>PISTON_LANGUAGES</code> 与 <code>LOCAL_LANGUAGES</code> 各自维护。</li>
+</ol>
+<p>另加了 <code>src/runners/server/protocol.ts</code> 作为 <b>Piston v2 线协议的唯一真值</b>：<code>buildExecuteBody()</code>（限额显式传，不吃对方默认 -1）、<code>mapExecuteResponse()</code>（RE/SG/TO/OL/EL/XX 六码映射）、<code>emitServerResult()</code>。A′ 节点按 Piston v2 <b>兼容子集</b>实现 <code>/api/v2/runtimes</code> + <code>/api/v2/execute</code>，于是 Go 优先接入的同时把「server 通路」真跑通了，而不是只留一个 <code>enabled:false</code> 的骨架。</p>
+
+<h3>13.4 回切条件与运维清单</h3>
+<div class="callout">
+<b>必须回切的触发条件</b>：① 对公网 / 非团队成员开放；② 跑不可信代码；③ 结果要用于判分或竞赛；④ 需要 CPU / 内存 / 进程数的硬限额；⑤ 需要真正的网络隔离。<br>
+<b>回切时运维侧要做</b>（前端只换注入的一行）：Linux + Docker + 纯 cgroup v2、<code>--privileged</code>、<code>GET /api/v2/runtimes</code> 动态取版本；显式设 <code>PISTON_RUN_MEMORY_LIMIT</code> / <code>PISTON_COMPILE_MEMORY_LIMIT</code>（<span class="k">默认是 -1 无限制</span>）、<code>PISTON_OUTPUT_MAX_SIZE</code>（默认 1024，会静默截断结果）、按语言用 <code>PISTON_LIMIT_OVERRIDES</code> 放宽 JVM/R 的 3 秒 <code>run_timeout</code>；<b>Piston 自身无鉴权</b>（<code>configuration.md</code> 无 API key、Express 无鉴权中间件），必须反代加 token / 只绑内网 / 防火墙。
+</div>
+
+<h3>13.5 本轮新坑（都会伪装成「全绿」）</h3>
+<ul>
+<li>★★ <b>服务端 Runner 直接返回 outputs 会被丢掉</b>：<code>execute.ts</code> 用 <code>collector.snapshot()</code> 覆盖 runner 返回值。v0.1~v0.4 的服务端骨架从没真机接线，纯函数单测全绿却没人发现。现在由 <code>emitServerResult()</code> 逐条 <code>ctx.emit()</code>，并由 <code>local.test.ts</code> 的<b>连线层集成判据</b>押住 —— 又一次印证「单元判据对没接线天生免疫」。</li>
+<li>★★ <b>Windows 管道 EOF + 满 CPU 死循环的环境开销</b>：<code>exec.Cmd</code> 用 <code>io.Writer</code> 会被 go build 的子进程继承管道句柄；改用真实 <code>*os.File</code>。本机实测 <code>for{}</code> 让 <code>go build</code> 慢约 6.3 秒、<code>TerminateProcess</code> 再慢约 5.4 秒，换 <code>time.Sleep</code> 后是 1.5 秒 / 1.2 秒。<span class="k">超时判据只押 status/signal，不押 wall_time 毫秒数</span>，自检用 sleeping 而不是忙等。</li>
+<li>★★ <b>官方文档内部两套限额数字</b>：README 写 max processes 256 / max files 2048，<code>configuration.md</code> 写 64 / 64；README 说「capping peak memory」，配置里 <code>PISTON_RUN_MEMORY_LIMIT</code> 默认却是 -1。照抄任一份都会漂，落地必须实测校准。</li>
+<li>★ <b>语言包陈旧且重</b>：官方 pkgs release 实测 Go 1.16.2 122.87 MiB、Java 15.0.2 186.32 MiB、Ruby 3.0.1 52.21 MiB、PHP 8.2.3 45.00 MiB、R 4.1.1 55.01 MiB，合计约 461 MiB tar.gz，全是 2021~2023 版本；要现代版本得自己 build package。A′ 用本机工具链（Go 1.27.0）反而避开了这一整块。</li>
+<li>★ 官方镜像基于 Debian buster + Node 15.10.0（均已 EOL），isolate 是 <code>envicutor/isolate</code> fork 的固定 commit，长期要自己养镜像。</li>
+</ul>
+
+<h3>13.6 Ruby / PHP / R / Java 走服务端后的授权口径</h3>
+<p>切到服务端后授权压力<b>变小而非变大</b>：WASM 路线要把运行时二进制分发到每个浏览器才触发 GPL / 专有条款，服务端只在自己机器上装。<b>但 R 本体是 <code>GPL-2|GPL-3</code>，CRAN 里有 AGPL-3 包（对外服务触发 §13）；OpenJDK 是 <code>GPLv2+CPE</code>，Oracle JDK 是 NFTC（免费窗口带日历，JDK 21 自 2026-10 CPU 起转 OTN）；PHP 8.5 及更早是 PHP License 3.01（第 3/4 条名称限制、第 6 条强制署名），新版已改 BSD-3-Clause；Ruby / Go 是宽松许可。</b>装包前确认发行版与版本，别把第三方预编译 tar 直接对外分发。这不是法律意见，对外服务前请法务过一遍。</p>
+
+<h3>13.7 v0.5 基线</h3>
+<p>单测 <b>69</b> · 真机 <b>86 条（84 绿 / 2 条记账跳过）</b> · dev + dist 双层 · 拆线负例 <b>11 组</b>（新增单测层 <code>negative:go</code> 精确红 3、真机层 <code>smoke:negative:go</code> 精确红 13）· CDP 抓包实证零包仓库请求且本地节点 <code>/api/v2/</code> 请求 ≥2 条 · Go 单二进制 10.5 MB 不入库 · 首屏体积见页面说明。<b>仍欠</b>：Ruby / PHP / R / Java 未接 · A′ 无 CPU/内存硬限额 · Windows 进程树 kill 不保证 · 无可信判分链路。</p>
+<p class="small">节点自身的完整真值（接口字段、probes 清单、起停参数、已知坑、回切清单）在 <code>servers/local/README.md</code>，本手册只记决策与口径。</p>
+
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）</div>
 </div>
 </body>
 </html>

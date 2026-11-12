@@ -159,6 +159,51 @@ sum(nums) * 2
     ],
     hint: '跑在独立 module Worker 里（Pyodide 314.0.7 / CPython 3.14.2），core 分发自托管不走 CDN；仅标准库，第三方包需预置 wasm wheel。无网络 / socket / threading / 子进程。',
   },
+  go: {
+    files: [
+      {
+        name: 'main.go',
+        content: `// Go · 本机工具链（A′ 执行节点，非 Docker；仅标准库，GOPROXY=off）
+// 只有 server 位置能跑：先 npm run server 启动本地节点，再点运行。
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	nums := []int{1, 2, 3, 4, 5}
+	sum := 0
+	for _, n := range nums {
+		sum += n
+	}
+
+	fmt.Println("你好，playground")
+	fmt.Println("sum =", sum)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	line := ""
+	if scanner.Scan() {
+		line = scanner.Text()
+	}
+	fmt.Println("stdin =", line)
+
+	payload, _ := json.Marshal(map[string]any{"城市": "昆明", "nums": nums})
+	fmt.Println("json =", string(payload))
+	fmt.Println("upper =", strings.ToUpper("go ok"))
+
+	// 再加一个 .go 文件会写进同一临时模块目录，一起 go build。
+	// 编译与运行分两阶段；进程级超时/输出限额，没有内核级隔离。
+}
+`,
+      },
+    ],
+    hint: '仅服务端执行：先 npm run server 启动本机 Go 执行节点（非 Docker、只绑 127.0.0.1）。go build + 运行两阶段，仅标准库且强制 GOPROXY=off 不外联；结果仅参考、不可用于判分。',
+  },
   css: {
     files: [
       {

@@ -1,4 +1,5 @@
 import { RunnerRegistry } from '../core/registry';
+import type { Runner } from '../core/contract';
 import { createWorkerRunner } from './browser/worker';
 import { createIframeRunner } from './browser/iframe';
 import { createLuaRunner } from './browser/lua';
@@ -6,34 +7,54 @@ import { createSqlRunner } from './browser/sql';
 import { createPythonRunner } from './browser/python';
 import { createPistonRunner } from './server/piston';
 import type { PistonConfig } from './server/piston';
+import { createLocalRunner } from './server/local';
+import type { LocalConfig } from './server/local';
 
 export { createWorkerRunner } from './browser/worker';
 export { createIframeRunner } from './browser/iframe';
 export { createLuaRunner } from './browser/lua';
 export { createSqlRunner } from './browser/sql';
 export { createPythonRunner } from './browser/python';
-export { createPistonRunner, buildPistonBody, mapPistonResponse } from './server/piston';
-export type { PistonConfig } from './server/piston';
-
-export interface ServerWiring {
-  config: PistonConfig;
-  enabled: boolean;
-}
+export { createPistonRunner, buildPistonBody, mapPistonResponse, PISTON_LANGUAGES } from './server/piston';
+export type { PistonConfig, PistonStage, PistonResponse } from './server/piston';
+export { createLocalRunner, LOCAL_LANGUAGES } from './server/local';
+export type { LocalConfig } from './server/local';
+export {
+  buildExecuteBody,
+  mapExecuteResponse,
+  emitServerResult,
+} from './server/protocol';
+export type {
+  ServerLanguageMap,
+  ServerProtocolConfig,
+  ServerResponse,
+  ServerStage,
+} from './server/protocol';
 
 /**
- * 浏览器 runner 按语言逐个接线：JS/TS → HTML/CSS → Lua(WASM) → SQL(WASM) → Python(WASM)。
- * 每加一门语言只要在这里 register 一次，能力表自动从「未接线」翻成可用，UI 一行不改。
- * 服务端 runner 的工厂和纯函数都已写好，但默认不接线，这样能力表不会撒谎说 server 可用。
+ * v0.5 抽掉的接缝：不再有 ServerWiring 绑死 PistonConfig。
+ * 服务端 runner 由调用方注入实例，A′ 与官方 Piston 都是「传一个 Runner 进去」，
+ * 换后端 = 换注入的这一行，注册表与能力表一行不改。
  */
-export function createRegistry(getMount: () => HTMLElement, server?: ServerWiring): RunnerRegistry {
+export function createRegistry(
+  getMount: () => HTMLElement,
+  serverRunners: readonly Runner[] = [],
+): RunnerRegistry {
   const reg = new RunnerRegistry();
   reg.register(createWorkerRunner());
   reg.register(createIframeRunner(getMount));
   reg.register(createLuaRunner());
   reg.register(createSqlRunner());
   reg.register(createPythonRunner());
-  if (server?.enabled) {
-    reg.register(createPistonRunner({ ...server.config, enabled: true }));
-  }
+  for (const runner of serverRunners) reg.register(runner);
   return reg;
+}
+
+/** 便捷构造：仍然保留可读的配置形态，但只产出 Runner，不再替调用方决定接线。 */
+export function localServerRunner(config: LocalConfig): Runner {
+  return createLocalRunner(config);
+}
+
+export function pistonServerRunner(config: PistonConfig): Runner {
+  return createPistonRunner({ ...config, enabled: true });
 }

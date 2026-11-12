@@ -8,7 +8,7 @@
  *  3. 结果挂到 window.__PLAYGROUND_SELFTEST__，方便外部脚本直接读，不靠解析页面文字。
  */
 import type { BrowserSandbox, LangId, RunLimits, RunRequest, RunResult } from '../core/contract';
-import { deriveCapabilities, validateWiring } from '../core/capabilities';
+import { deriveCapabilities, validateWiring, capabilityFor } from '../core/capabilities';
 import { execute } from '../core/execute';
 import type { RunnerRegistry } from '../core/registry';
 import { SAMPLES } from '../core/samples';
@@ -44,6 +44,7 @@ const FILE_NAMES: Record<LangId, string> = {
   lua: 'main.lua',
   sql: 'main.sql',
   python: 'main.py',
+  go: 'main.go',
 };
 
 function fileName(lang: LangId): string {
@@ -440,6 +441,85 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     r = await run('python', `while True:\n    pass`, { wallMs: 600 });
     pass('python/infinite-loop', 'python', '同步死循环被 Worker 终止',
       r.status === 'timeout' && r.timedOut, `status=${r.status} timedOut=${r.timedOut} ${r.durationMs}ms`);
+  }
+
+  // ---------- Go（A′ 本机进程执行节点 · 仅 server 位置） ----------
+  // 纪律：判据押「能读回字节 / status / signal / probes」，绝不押 wall_time 的毫秒数。
+  // 本机实测：满 CPU 的 for{} 会让 go build 与 TerminateProcess 各慢约 5 秒，
+  // 这是 Windows 环境开销，不是执行节点的超时实现有问题。
+  {
+    const goCap = capabilityFor(caps, 'go');
+    pass('go/wiring', 'go', 'Go 只有 server 位置且不可判分',
+      goCap.available && goCap.targets.length === 1 && goCap.targets[0] === 'server' &&
+        goCap.prefer === 'server' && !goCap.trusted && goCap.trust === 'advisory' &&
+        goCap.isolation.includes('process-only'),
+      `targets=${goCap.targets.join('/')} trust=${goCap.trust} isolation=${goCap.isolation.join('/')}`);
+
+    let r = await run('go', `package main\nimport "fmt"\nfunc main() { fmt.Println("GO-STDOUT-MARK") }`);
+    pass('go/stdout', 'go', '本地节点 stdout 回显',
+      r.status === 'ok' && text(r).includes('GO-STDOUT-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+    pass('go/capability', 'go', '如实登记 process-only / advisory / 零外联 / 不谎报内存',
+      r.target === 'server' && r.engine === 'local.process.v1' &&
+        r.probes?.isolation === 'process-only' && r.probes?.trust === 'advisory' &&
+        r.probes?.network === 'GOPROXY=off,GOTOOLCHAIN=local' &&
+        r.probes?.stages === 'build+run' && r.usage?.memoryBytes === undefined,
+      `engine=${r.engine} probes=${JSON.stringify(r.probes ?? {}).slice(0, 160)} usage=${JSON.stringify(r.usage ?? {})}`);
+
+    r = await run('go',
+      `package main\nimport ("bufio"; "fmt"; "os")\nfunc main() { s := bufio.NewScanner(os.Stdin); v := ""; if s.Scan() { v = s.Text() }; fmt.Println("STDIN:", v) }`,
+      { stdin: 'marker-42' });
+    pass('go/stdin', 'go', 'stdin 注入并读回',
+      r.status === 'ok' && text(r).includes('STDIN: marker-42'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('go',
+      `package main\nimport ("fmt"; "os")\nfunc main() { fmt.Fprintln(os.Stderr, "GO-STDERR-MARK"); os.Exit(2) }`);
+    pass('go/stderr', 'go', 'stderr 与真实退出码',
+      hasStderr(r) && text(r).includes('GO-STDERR-MARK') && r.exitCode === 2,
+      `status=${r.status} exitCode=${r.exitCode} stderr=${text(r).slice(0, 100)}`);
+
+    const mainSrc = `package main\nimport "fmt"\nfunc main() { fmt.Println("HELPER:", label()) }`;
+    r = await run('go', mainSrc, {
+      files: [
+        { name: 'main.go', content: mainSrc },
+        { name: 'helper.go', content: 'package main\nfunc label() string { return "HELPER-MARK" }\n' },
+      ],
+    });
+    pass('go/multi-file', 'go', '附加 .go 文件同目录参与编译',
+      r.status === 'ok' && text(r).includes('HELPER: HELPER-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    r = await run('go', 'package main\nfunc main() { this_is_not_go }');
+    pass('go/compile-error', 'go', '编译阶段失败可诊断',
+      r.status === 'error' && r.diagnostics.some((d) => d.code === 'compile') &&
+        /syntax|expected|undefined/i.test(text(r)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.code).join('/')} out=${text(r).slice(0, 120)}`);
+
+    // 用 time.Sleep 而不是 for{}：后者在本机会把 kill 拖到 5 秒以上，且判据不押耗时。
+    r = await run('go', 'package main\nimport "time"\nfunc main() { time.Sleep(30 * time.Second) }', { wallMs: 700 });
+    pass('go/timeout', 'go', '墙钟超时被终止并回报 TO',
+      r.status === 'timeout' && r.timedOut &&
+        r.diagnostics.some((d) => /TO|超时|终止/.test(d.message)),
+      `status=${r.status} timedOut=${r.timedOut} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('go',
+      `package main\nimport "fmt"\nfunc main() { for i := 0; i < 4000; i++ { fmt.Println("012345678901234567890123456789") } }`,
+      { outputBytes: 512 });
+    pass('go/output-limit', 'go', '输出字节限额生效',
+      r.status === 'output-limit' && text(r).length <= 512 + 64,
+      `status=${r.status} bytes=${text(r).length}`);
+
+    const escapeSrc = 'package main\nfunc main() {}';
+    r = await run('go', escapeSrc, { files: [{ name: '../evil.go', content: escapeSrc }] });
+    pass('go/path-escape', 'go', '文件名路径逃逸被节点拒绝',
+      r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('go', 'package main\nimport "github.com/nope/nope"\nfunc main() {}');
+    pass('go/stdlib-only', 'go', '第三方包不可拉取（GOPROXY=off 零外联）',
+      r.status !== 'ok' && /GOPROXY|no required module|module lookup disabled|disabled/i.test(text(r)),
+      `status=${r.status} out=${text(r).slice(0, 140)}`);
   }
 
   // ---------- 默认示例：用户打开页面点「运行」看到的第一份代码 ----------

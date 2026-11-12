@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_LIMITS } from '../core/limits';
 import { resolveRunner } from '../core/router';
-import { createRegistry } from '../runners';
+import { createRegistry, createPistonRunner } from '../runners';
 import type { LangId, RunRequest } from '../core/contract';
 
 function request(lang: LangId, extra: Partial<RunRequest> = {}): RunRequest {
@@ -45,14 +45,14 @@ describe('路由：明确拒绝，不静默降级', () => {
   });
 
   it('注入 server runner 后同一请求可执行，UI 契约不变', () => {
-    const withServer = createRegistry(() => ({} as unknown as HTMLElement), {
-      enabled: true,
-      config: {
+    const withServer = createRegistry(() => ({} as unknown as HTMLElement), [
+      createPistonRunner({
         baseUrl: 'http://127.0.0.1:2000',
         versions: { javascript: '20.0.0' },
         timeoutMs: 5000,
-      },
-    });
+        enabled: true,
+      }),
+    ]);
     const d = resolveRunner(request('javascript', { target: 'server' }), withServer);
     expect(d.kind).toBe('run');
     if (d.kind === 'run') {

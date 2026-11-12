@@ -1,28 +1,43 @@
 /**
- * 服务端执行后端骨架 —— 为后期迁移预留，首版不接线（enabled=false，且默认不注册）。
+ * 官方 Piston（Docker / Linux / isolate）后端实现。
  *
- * 为什么现在就写完整：契约里所有与服务端相关的字段（limits、usage、exitCode、阶段状态）
- * 必须首版就有真实实现压着，否则迁移时会发现「字段是留了，但没人会映射」。
- * 这里的可测纯函数就是那个压舱物。
+ * v0.5 起它只是 protocol.ts 的一个「配置 + 传输」实例：线协议与状态映射已抽到
+ * protocol.ts，A′ 本机执行节点复用同一套纯函数。将来切到官方 Docker 部署，
+ * 只需把 createRegistry 注入的 Runner 从 local.process.v1 换成 piston.v2。
  *
- * 启用前必须满足（见分析手册第十一章）：
- *  - 执行节点与业务/数据库/云凭据隔离；Piston 自身要求 --privileged 容器，
- *    外层应再套 gVisor 或 Firecracker microVM。
+ * 启用前必须满足（见分析手册第十一、十三章）：
+ *  - 执行节点与业务/数据库/云凭据隔离；Piston 自身要求 --privileged 容器 + 纯 cgroup v2。
  *  - 公共 API 自 2026-02-15 起需授权，商业/个人项目不发证 ⇒ 自建实例。
  *  - 能力表要由 GET /api/v2/runtimes 动态生成，不要手写版本常量。
  */
-
 import type {
-  Diagnostic,
   LangId,
   RunContext,
   RunRequest,
   RunResult,
   Runner,
 } from '../../core/contract';
-import { langDef } from '../../core/capabilities';
-import { mapServerStatus } from '../../core/limits';
 import { newResult, diagnostic } from '../../core/result';
+import {
+  buildExecuteBody,
+  mapExecuteResponse,
+  emitServerResult,
+  type ServerLanguageMap,
+  type ServerResponse,
+  type ServerStage,
+} from './protocol';
+
+/** Piston 专有语言名。换后端时不进 LANG_DEFS，只在这里 / local.ts 各自维护。 */
+export const PISTON_LANGUAGES: ServerLanguageMap = Object.freeze({
+  javascript: 'javascript',
+  typescript: 'typescript',
+  html: 'file',
+  css: 'file',
+  lua: 'lua',
+  sql: 'sqlite3',
+  python: 'python',
+  go: 'go',
+});
 
 export interface PistonConfig {
   baseUrl: string;
@@ -32,113 +47,40 @@ export interface PistonConfig {
   timeoutMs: number;
   /** 编译预算与执行预算分开，默认给 10s，避免 C++/Rust 首次编译被误杀 */
   compileWallMs?: number;
+  /** 覆盖默认的 Piston 语言名映射，一般不用动 */
+  languageMap?: ServerLanguageMap;
   enabled?: boolean;
 }
 
-export interface PistonStage {
-  stdout?: string;
-  stderr?: string;
-  output?: string;
-  code?: number | null;
-  signal?: string | null;
-  status?: string | null;
-  message?: string | null;
-  cpu_time?: number;
-  wall_time?: number;
-  memory?: number;
-}
+export type PistonStage = ServerStage;
+export type PistonResponse = ServerResponse;
 
-export interface PistonResponse {
-  language?: string;
-  version?: string;
-  run: PistonStage;
-  compile?: PistonStage;
-}
-
-/** RunRequest → Piston v2 execute body。所有限额显式传，绝不吃对方默认值。 */
+/** 保留同名导出：现有判据与调用点一行不改。 */
 export function buildPistonBody(req: RunRequest, cfg: PistonConfig): Record<string, unknown> {
-  const def = langDef(req.language);
-  const version = cfg.versions[req.language];
-  if (!version) {
-    throw new Error(`未登记 ${req.language} 的服务端版本；请先读 GET /api/v2/runtimes`);
-  }
-  return {
-    language: def.serverLanguage,
-    version,
-    files: req.files.map((f) => ({ name: f.name, content: f.content })),
-    stdin: req.stdin ?? '',
-    args: [],
-    compile_timeout: cfg.compileWallMs ?? 10000,
-    run_timeout: req.limits.wallMs,
-    compile_cpu_time: req.limits.cpuMs,
-    run_cpu_time: req.limits.cpuMs,
-    // Piston 的这两个默认值是 -1（无限制）。不显式传 = 把执行节点交给用户代码。
-    compile_memory_limit: req.limits.memoryBytes,
-    run_memory_limit: req.limits.memoryBytes,
-  };
+  return buildExecuteBody(req, {
+    versions: cfg.versions,
+    languageMap: cfg.languageMap ?? PISTON_LANGUAGES,
+    compileWallMs: cfg.compileWallMs,
+  });
 }
 
-/** Piston 阶段状态 → 统一 RunResult。六种状态都有归宿。 */
 export function mapPistonResponse(
   resp: PistonResponse,
   req: RunRequest,
   requestId: string,
 ): RunResult {
-  const compileStatus = mapServerStatus(resp.compile?.status);
-  const runStatus = mapServerStatus(resp.run.status);
-  const compileFailed = compileStatus !== 'ok';
-  const status = compileFailed ? compileStatus : runStatus;
-
-  const chunks: RunResult['outputs'] = [];
-  const push = (stream: 'stdout' | 'stderr' | 'info', text: string | undefined) => {
-    if (!text) return;
-    chunks.push({ stream, text, seq: chunks.length });
-  };
-
-  if (resp.compile) {
-    push('info', '[compile]');
-    push('stdout', resp.compile.stdout);
-    push('stderr', resp.compile.stderr);
-    if (resp.compile.message) push('stderr', resp.compile.message);
-  }
-  push('stdout', resp.run.stdout);
-  push('stderr', resp.run.stderr);
-  if (resp.run.message) push('stderr', resp.run.message);
-
-  const diagnostics: Diagnostic[] = [];
-  if (compileFailed) {
-    diagnostics.push(diagnostic('error', `编译阶段失败：${resp.compile?.status ?? 'unknown'}`, 'compile'));
-  }
-  if (runStatus !== 'ok') {
-    diagnostics.push(diagnostic('error', `运行阶段状态：${resp.run.status ?? 'unknown'}`, 'run'));
-  }
-
-  return {
-    ...newResult({
-      requestId,
-      language: req.language,
-      target: 'server',
-      engine: 'piston.v2',
-      status,
-      diagnostics,
-    }),
-    outputs: chunks,
-    exitCode: resp.run.code ?? null,
-    timedOut: status === 'timeout',
-    usage: {
-      cpuMs: resp.run.cpu_time,
-      wallMs: resp.run.wall_time,
-      memoryBytes: resp.run.memory,
-    },
-  };
+  return mapExecuteResponse(resp, req, requestId, 'piston.v2');
 }
 
 export function createPistonRunner(cfg: PistonConfig): Runner {
   return {
     id: 'piston.v2',
     target: 'server',
-    languages: ['javascript', 'typescript', 'html', 'css'],
+    languages: ['javascript', 'typescript', 'html', 'css', 'lua', 'sql', 'python', 'go'],
     enabled: cfg.enabled ?? false,
+    // isolate = Linux namespaces + chroot + uid + cgroup，结果可用于判分。
+    isolation: 'kernel',
+    trust: 'graded',
     priority: 100,
     async run(req: RunRequest, ctx: RunContext): Promise<RunResult> {
       const body = buildPistonBody(req, cfg);
@@ -162,7 +104,7 @@ export function createPistonRunner(cfg: PistonConfig): Runner {
         });
       }
       const data = (await res.json()) as PistonResponse;
-      return mapPistonResponse(data, req, ctx.requestId);
+      return emitServerResult(mapPistonResponse(data, req, ctx.requestId), ctx);
     },
   };
 }

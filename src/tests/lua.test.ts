@@ -3,7 +3,7 @@ import { DEFAULT_LIMITS } from '../core/limits';
 import { LANG_DEFS, capabilityFor, deriveCapabilities, validateWiring } from '../core/capabilities';
 import { resolveRunner } from '../core/router';
 import type { RunRequest } from '../core/contract';
-import { createRegistry } from '../runners';
+import { createRegistry, PISTON_LANGUAGES } from '../runners';
 import {
   LUA_BOOTSTRAP,
   classifyLuaError,
@@ -72,7 +72,8 @@ describe('Lua runner 元数据与路由', () => {
     const def = LANG_DEFS.find((d) => d.lang === 'lua');
     expect(def?.browserSandbox).toBe('worker');
     expect(def?.switchable).toEqual(['worker']);
-    expect(def?.serverLanguage).toBe('lua');
+    // 服务端语言名归后端自己维护，不再写死在 LANG_DEFS（v0.5 抽掉的接缝）
+    expect(PISTON_LANGUAGES.lua).toBe('lua');
   });
 
   it('默认路由选中 wasmoon runner；指定 server 明确拒绝，不静默降级', () => {

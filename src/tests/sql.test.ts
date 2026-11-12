@@ -3,7 +3,7 @@ import { DEFAULT_LIMITS } from '../core/limits';
 import { LANG_DEFS, capabilityFor, deriveCapabilities, validateWiring } from '../core/capabilities';
 import { resolveRunner } from '../core/router';
 import type { RunRequest } from '../core/contract';
-import { createRegistry } from '../runners';
+import { createRegistry, PISTON_LANGUAGES } from '../runners';
 import {
   MAX_SQL_ROWS,
   SQL_MEMORY_CAPABILITY,
@@ -83,7 +83,8 @@ describe('SQL runner 元数据与路由', () => {
     const def = LANG_DEFS.find((d) => d.lang === 'sql');
     expect(def?.browserSandbox).toBe('worker');
     expect(def?.switchable).toEqual(['worker']);
-    expect(def?.serverLanguage).toBe('sqlite3');
+    // Piston 专有名（sqlite3）归后端映射表，LANG_DEFS 只留语言元数据
+    expect(PISTON_LANGUAGES.sql).toBe('sqlite3');
   });
 
   it('默认路由选中 sql.js runner；指定 server 明确拒绝，不静默降级', () => {

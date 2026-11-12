@@ -14,7 +14,17 @@ export type ExecTarget = 'browser' | 'server';
 /** 浏览器内的执行载体：Worker 可 terminate；iframe 有 DOM 但只能靠重建中止。 */
 export type BrowserSandbox = 'worker' | 'iframe';
 
-export type LangId = 'javascript' | 'typescript' | 'html' | 'css' | 'lua' | 'sql' | 'python';
+export type LangId = 'javascript' | 'typescript' | 'html' | 'css' | 'lua' | 'sql' | 'python' | 'go';
+
+/**
+ * 隔离档位由 runner 自己声明，能力表只做汇总，绝不按 target 猜。
+ * v0.5 的教训：A′ 是 target=server 但只有 process-only 隔离，若按「server ⇒ 可信」
+ * 硬推导，能力表就会把不可判分的结果标成可信。
+ */
+export type IsolationLevel = 'browser' | 'wasm' | 'process-only' | 'kernel';
+
+/** graded = 结果可用于判分；advisory = 仅供人看，不可当裁判。 */
+export type TrustLevel = 'graded' | 'advisory';
 
 export type RunStatus =
   | 'ok'
@@ -103,6 +113,12 @@ export interface Runner {
   readonly sandbox?: BrowserSandbox;
   readonly languages: readonly LangId[];
   readonly enabled: boolean;
+  /**
+   * 隔离与信任档位。浏览器 runner 省略即为 browser / advisory；
+   * 服务端 runner 必须显式声明，A′ 是 process-only / advisory，Piston 是 kernel / graded。
+   */
+  readonly isolation?: IsolationLevel;
+  readonly trust?: TrustLevel;
   /** 同一 target 下多个 runner 时，数值小的先选 */
   readonly priority: number;
   run(req: RunRequest, ctx: RunContext): Promise<RunResult>;
@@ -118,8 +134,12 @@ export interface Capability {
   prefer: ExecTarget | null;
   available: boolean;
   offline: boolean;
-  /** 存在可用于判分的可信路径（只有服务端满足） */
+  /** 存在可用于判分的可信路径；由 runner 声明的 trust 推导，不是由 target 推导 */
   trusted: boolean;
+  /** 当前已接线 runner 的隔离档位汇总，供 UI 如实展示 */
+  isolation: IsolationLevel[];
+  /** 最高信任档；null = 没有已接线 runner */
+  trust: TrustLevel | null;
   browserSandbox: BrowserSandbox;
   switchable: BrowserSandbox[];
   nativeApis: string[];

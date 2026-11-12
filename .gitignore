@@ -11,6 +11,9 @@ dist/
 .smoke-sample-report.json
 .smoke-python-report.json
 .negative-python-report.json
+.negative-go-report.json
+.smoke-go-report.json
 public/pyodide/
+servers/local/bin/
 *.log
 .DS_Store
