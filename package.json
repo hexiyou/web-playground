@@ -1,6 +1,6 @@
 {
   "name": "team-playground",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "浏览器端代码片段快速验证 playground · 契约先行，服务端执行可插拔",
@@ -21,6 +21,7 @@
     "negative:go": "node scripts/negative-go.mjs",
     "negative:php": "node scripts/negative-php.mjs",
     "negative:perl": "node scripts/negative-perl.mjs",
+    "negative:r": "node scripts/negative-r.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:preview": "npm run build && node scripts/smoke.mjs --preview",
     "smoke:negative": "node scripts/smoke-negative.mjs",
@@ -31,6 +32,7 @@
     "smoke:negative:go": "node scripts/smoke-go-negative.mjs",
     "smoke:negative:php": "node scripts/smoke-php-negative.mjs",
     "smoke:negative:perl": "node scripts/smoke-perl-negative.mjs",
+    "smoke:negative:r": "node scripts/smoke-r-negative.mjs",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

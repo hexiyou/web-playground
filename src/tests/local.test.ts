@@ -51,6 +51,7 @@ describe('A′ 本地执行节点 Runner 元数据', () => {
   it('语言名映射归后端自有，不写进 LANG_DEFS', () => {
     expect(LOCAL_LANGUAGES.go).toBe('go');
     expect(LOCAL_LANGUAGES.php).toBe('php');
+    expect(LOCAL_LANGUAGES.r).toBe('r');
     expect(LOCAL_LANGUAGES.sql).toBeUndefined();
   });
 
@@ -63,6 +64,7 @@ describe('A′ 本地执行节点 Runner 元数据', () => {
     expect(r.languages).toContain('go');
     expect(r.languages).toContain('php');
     expect(r.languages).toContain('perl');
+    expect(r.languages).toContain('r');
     expect(r.isolation).toBe('process-only');
     expect(r.trust).toBe('advisory');
   });

@@ -17,6 +17,8 @@ dist/
 .smoke-php-report.json
 .negative-perl-report.json
 .smoke-perl-report.json
+.negative-r-report.json
+.smoke-r-report.json
 .node-check-report.json
 # 本机运行时路径覆盖（可含绝对路径，不入库）；入库模板是 runtimes.json
 servers/local/runtimes.local.json

@@ -1,19 +1,24 @@
 /**
- * A′ 节点层判据：手动配置运行时路径 + runtimes 动态探测 + 宿主风味。
+ * A′ 节点层判据：手动配置运行时路径 + runtimes 动态探测 + 宿主风味 + 脚本入口包装。
  *
- * 真机自检（浏览器里跑）只能看到「PHP / Perl 能跑」，看不到「路径配置到底有没有生效」；
- * 这里直接打节点的 HTTP 接口，用四个场景把可观察副作用钉死：
- *   A 正常配置：php.path / perl.path 指向便携式可执行文件 → runtimes.source=config、execute 真跑通
+ * 真机自检（浏览器里跑）只能看到「PHP / Perl / R 能跑」，看不到「路径配置到底有没有生效」；
+ * 这里直接打节点的 HTTP 接口，用五个场景把可观察副作用钉死：
+ *   A 正常配置：php / perl / r 的 path 指向便携式入口 → runtimes.source=config、execute 真跑通
  *   B 坏路径：路径不存在 → 该语言从 runtimes 消失、execute 明确 400（自动置灰）
- *   C disabled：PATH 里明明有 php / 配置里明明有 perl，但显式关闭优先 → 仍然不登记
- *   D 空 path：回退 PATH → php source=path；perl 按 PATH 里到底有没有它如实判
+ *   C disabled：PATH 里明明有 php / 配置里明明有 perl 与 r，但显式关闭优先 → 仍然不登记
+ *   D 空 path：回退 PATH → php source=path；perl / r 按 PATH 里到底有没有它如实判
+ *   E 脚本包装器缺失：把 r 入口拷到没有 sh.exe 的临时目录 → r 不登记、health.missing 说明原因、
+ *     execute 400（反证 wrapEntry 不是摆设：脚本型入口没包装器就绝不能谎报可用）
  *
  * ★ v0.7：Perl 用 Cygwin Perl，可执行文件不在 PATH、也没写注册表，是「手动配置运行时路径」
  *   的第一个真实用例。这里额外押 flavor=$^O、中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF。
+ * ★ v0.8：R 的入口是 #!/bin/sh 脚本而非 PE，节点走通用 wrapEntry + envFromTool 包装与环境净化；
+ *   A 场景押 entryKind / wrapper / flavor / 宿主 BASH_FUNC 净化后 stderr 干净 / stats 不谎报。
  *   判据只押接口能看到的事实，不押日志文字；每个场景都重启节点（配置只在启动时读一次）。
+ *   共 46 条：node 4 · config 24 · badpath 7 · disabled 4 · fallback 4 · wrapper 3。
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +118,41 @@ function resolvePerl() {
   return null;
 }
 
+/**
+ * ★ v0.8：R 的入口不是可执行文件而是 #!/bin/sh 脚本。这里绝不用 spawnSync 直接跑它
+ * （Windows 会报 WinError 193），只读文件头确认「它确实是脚本」+ 同目录有 sh.exe。
+ * 版本与风味一律以节点 /api/v2/runtimes 的探测结果为准，不在这里另造一套真值。
+ */
+function resolveR() {
+  const candidates = [];
+  if (process.env.PLAYGROUND_R_EXE) candidates.push(process.env.PLAYGROUND_R_EXE);
+  try {
+    const local = JSON.parse(readFileSync(join(dir, 'runtimes.local.json'), 'utf8'));
+    if (local?.runtimes?.r?.path) candidates.push(local.runtimes.r.path);
+  } catch { /* 本机覆盖文件不存在就跳过 */ }
+  candidates.push('D:/cygwin64/bin/r', 'C:/cygwin64/bin/r');
+  for (const c of candidates) {
+    if (!existsSync(c)) continue;
+    const head = readFileSync(c).subarray(0, 64).toString('utf8');
+    const shell = join(dirname(c), 'sh.exe');
+    return { path: c.replace(/\\/g, '/'), isScript: /^#!\s*\S*sh\b/.test(head), hasShell: existsSync(shell), head: head.trim() };
+  }
+  return null;
+}
+
+/** R 的最小执行请求；中文走 JSON body，不经过 shell argv。 */
+function rExecute(code, stdin = '') {
+  return api('/api/v2/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      language: 'r', version: '*',
+      files: [{ name: 'main.R', content: code }],
+      stdin, args: [],
+      compile_timeout: 10000, run_timeout: 6000, output_max_size: 65536,
+    }),
+  });
+}
+
 /** 一条最小 PHP 执行请求，用来证明配置出来的解释器真的能跑代码。 */
 function phpExecute(code) {
   return api('/api/v2/execute', {
@@ -161,9 +201,17 @@ async function main() {
   check('node/perl-executable', perl.exe === '' || existsSync(perl.exe),
     `exe=${perl.exe || '(PATH)'} version=${perl.version} flavor=${perl.flavor}`);
 
+  const r = resolveR();
+  if (!r) {
+    throw new Error('本机没有 Cygwin R 入口；请设 PLAYGROUND_R_EXE 或在 runtimes.local.json 配 r.path');
+  }
+  console.log(`[前置] R 入口：${r.path} 脚本=${r.isScript} sh.exe=${r.hasShell} 头部=${r.head}`);
+  check('node/r-entry-is-script', r.isScript, `入口文件头=${r.head}`);
+  check('node/r-shell-present', r.hasShell, `同目录 sh.exe 存在=${r.hasShell}`);
+
   // ---------- A 正常配置路径 ----------
   await startNode({
-    runtimes: { go: { path: '' }, php: { path: phpExe }, perl: { path: perl.exe } },
+    runtimes: { go: { path: '' }, php: { path: phpExe }, perl: { path: perl.exe }, r: { path: r.path } },
   });
   {
     const rt = await api('/api/v2/runtimes');
@@ -180,6 +228,10 @@ async function main() {
       `perl=${JSON.stringify(perlEntry ?? null)} 期望 version=${perl.version}`);
     check('config/runtimes-perl-flavor', !!perlEntry && perlEntry.flavor === perl.flavor,
       `flavor=${perlEntry?.flavor ?? '无'} 期望=${perl.flavor}`);
+    const rEntry = list.find((x) => x.language === 'r');
+    check('config/runtimes-r-source-config', !!rEntry && rEntry.source === 'config' &&
+      /^\d+\.\d+/.test(rEntry.version ?? '') && !!rEntry.flavor,
+      `r=${JSON.stringify(rEntry ?? null)}`);
 
     const health = await api('/health');
     check('config/health-reports-config', String(health.body?.config ?? '').includes('pg-runtimes-check') &&
@@ -236,6 +288,53 @@ async function main() {
     const crlfOut = crlf.body?.run?.stdout ?? '';
     check('config/perl-no-crlf', crlf.status === 200 && crlfOut.includes('A\nB') && !crlfOut.includes('\r'),
       `stdout=${JSON.stringify(crlfOut.slice(0, 40))}`);
+
+    // ---------- R / 脚本型入口专属硬判据 ----------
+    if (r.isScript) {
+      const direct = spawnSync(r.path.replace(/\//g, '\\'), ['--version'], { encoding: 'utf8' });
+      check('config/r-direct-exec-fails', !!direct.error || direct.status !== 0,
+        `Windows CreateProcess 不能直接跑 shebang 脚本：error=${direct.error?.code ?? '无'} status=${direct.status}`);
+    }
+    const rRun = await rExecute('cat("NODE-R-CONFIG-OK\\n");');
+    const rOut = rRun.body?.run?.stdout ?? '';
+    const rErr = rRun.body?.run?.stderr ?? '';
+    const rProbes = rRun.body?.probes ?? {};
+    check('config/r-execute-really-runs', rRun.status === 200 && rOut.includes('NODE-R-CONFIG-OK'),
+      `status=${rRun.status} stdout=${rOut.slice(0, 100)}`);
+    check('config/r-probes-script-wrapper', rProbes.entryKind === 'shell-script;#!/bin/sh' &&
+      rProbes.wrapper === 'sh.exe <script>' && rProbes.stages === 'run' &&
+      rProbes.runtimePathSource === 'config' && rProbes.network === 'no-enforcement;serverSocket-available',
+      `probes=${JSON.stringify(rProbes).slice(0, 300)}`);
+    // ★ 最关键：宿主 BASH_FUNC_RM%% / BASH_ENV / MSYS2 PATH 只要漏一个进 Cygwin sh，
+    //   R 启动调用的 rm 就会命中 WorkBuddy 的 CRLF 版 safe-bin 脚本，stderr 刷一屏报错。
+    check('config/r-clean-host-env', !/safe-bin|pipefail|command not found/.test(rErr),
+      `stderr=${JSON.stringify(rErr.slice(0, 180))}`);
+    // 不谎报：stats 加载不了就必须有启动告警；设 R_DEFAULT_PACKAGES 把它盖掉是错的。
+    const truth = await rExecute('cat("STATS=", requireNamespace("stats", quietly=TRUE), "\\n");');
+    const truthOut = truth.body?.run?.stdout ?? '';
+    const truthErr = truth.body?.run?.stderr ?? '';
+    const statsFalse = /STATS=\s*FALSE/.test(truthOut);
+    check('config/r-default-packages-truth', /STATS=\s*(TRUE|FALSE)/.test(truthOut) &&
+      (!statsFalse || /defaultPackages/.test(truthErr)),
+      `out=${truthOut.trim()} stderr含告警=${/defaultPackages/.test(truthErr)}`);
+    const cnR = await rExecute('cat("你好，昆明\\n");');
+    check('config/r-utf8', (cnR.body?.run?.stdout ?? '').includes('你好，昆明'),
+      `stdout=${JSON.stringify((cnR.body?.run?.stdout ?? '').slice(0, 80))}`);
+    const stdinR = await rExecute('x <- readLines("stdin", n=1, warn=FALSE); cat("STDIN:", x, "\\n");', 'marker-42\n');
+    check('config/r-stdin', (stdinR.body?.run?.stdout ?? '').includes('marker-42'),
+      `stdout=${JSON.stringify((stdinR.body?.run?.stdout ?? '').slice(0, 80))}`);
+    const semR = await rExecute('cat("os=", R.version$os, "\\nwd=", getwd(), "\\n");');
+    const semROut = semR.body?.run?.stdout ?? '';
+    check('config/r-host-semantics', new RegExp(`os=\\s*${rEntry?.flavor ?? 'cygwin'}`).test(semROut) &&
+      /wd=\s*\/cygdrive\//.test(semROut),
+      `flavor=${rEntry?.flavor} out=${semROut.replace(/\n/g, ' | ').slice(0, 160)}`);
+    const sockR = await rExecute('cat(tryCatch({ s <- serverSocket(0); close(s); "SOCKET-OK" }, error=function(e) "SOCKET-ERR"), "\\n");');
+    check('config/r-socket-available', (sockR.body?.run?.stdout ?? '').includes('SOCKET-OK'),
+      `stdout=${JSON.stringify((sockR.body?.run?.stdout ?? '').slice(0, 80))}`);
+    const crlfR = await rExecute('cat("A\\nB\\n");');
+    const crlfROut = crlfR.body?.run?.stdout ?? '';
+    check('config/r-no-crlf', crlfROut.includes('A\nB') && !crlfROut.includes('\r'),
+      `stdout=${JSON.stringify(crlfROut.slice(0, 40))}`);
   }
 
   // ---------- B 坏路径 → 自动置灰 ----------
@@ -245,6 +344,7 @@ async function main() {
       go: { path: '' },
       php: { path: join(tmpdir(), 'pg-no-such-php.exe') },
       perl: { path: join(tmpdir(), 'pg-no-such-perl.exe') },
+      r: { path: join(tmpdir(), 'pg-no-such-r') },
     },
   });
   {
@@ -267,6 +367,12 @@ async function main() {
     check('badpath/perl-execute-rejected', perlRun.status === 400 &&
       /runtime is unknown/.test(perlRun.body?.message ?? ''),
       `status=${perlRun.status} message=${perlRun.body?.message ?? ''}`);
+    check('badpath/r-not-registered', !list.some((x) => x.language === 'r'),
+      `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
+    const rRun = await rExecute('cat(1);');
+    check('badpath/r-execute-rejected', rRun.status === 400 &&
+      /runtime is unknown/.test(rRun.body?.message ?? ''),
+      `status=${rRun.status} message=${rRun.body?.message ?? ''}`);
   }
 
   // ---------- C disabled 优先于 PATH / 配置 ----------
@@ -276,6 +382,7 @@ async function main() {
       go: { path: '' },
       php: { path: '', disabled: true },
       perl: { path: perl.exe, disabled: true },
+      r: { path: r.path, disabled: true },
     },
   });
   {
@@ -287,15 +394,17 @@ async function main() {
     check('disabled/perl-hidden-despite-config', !list.some((x) => x.language === 'perl'),
       `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
     const health = await api('/health');
+    check('disabled/r-hidden-despite-config', !list.some((x) => x.language === 'r'),
+      `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
     check('disabled/health-says-disabled', /disabled/.test(health.body?.missing?.php ?? '') &&
-      /disabled/.test(health.body?.missing?.perl ?? ''),
+      /disabled/.test(health.body?.missing?.perl ?? '') && /disabled/.test(health.body?.missing?.r ?? ''),
       `missing=${JSON.stringify(health.body?.missing ?? {})}`);
   }
 
   // ---------- D 空 path 回退 PATH ----------
   await stopNode();
   await startNode({
-    runtimes: { go: { path: '' }, php: { path: '' }, perl: { path: '' } },
+    runtimes: { go: { path: '' }, php: { path: '' }, perl: { path: '' }, r: { path: '' } },
   });
   {
     const rt = await api('/api/v2/runtimes');
@@ -318,7 +427,39 @@ async function main() {
         ? !!perlEntry && perlEntry.source === 'path'
         : !perlEntry,
       `PATH 有 perl=${pathHasPerl} runtimes.perl=${JSON.stringify(perlEntry ?? null)}`);
+    // R 入口是脚本，Windows CreateProcess 直接跑不了 ⇒ 空 path 时也必须从能力表消失。
+    const pathHasR = spawnSync('r', ['--version'], { encoding: 'utf8' }).status === 0;
+    const rFallback = list.find((x) => x.language === 'r');
+    check('fallback/r-follows-path-truth',
+      pathHasR ? !!rFallback && rFallback.source === 'path' : !rFallback,
+      `PATH 有 r=${pathHasR} runtimes.r=${JSON.stringify(rFallback ?? null)}`);
   }
+
+  // ---------- E 脚本包装器缺失 → 必须置灰（反证 wrapEntry 不是摆设） ----------
+  // 放一个真的 #!/bin/sh 脚本，但同目录不给 sh.exe：节点必须报「脚本包装器不可用」，
+  // 而不是拿 Windows 直接 exec 撞 WinError 193 后含糊失败，更不能谎报已登记。
+  const fakeDir = join(tmpdir(), `pg-r-nosh-${process.pid}`);
+  mkdirSync(fakeDir, { recursive: true });
+  const fakeR = join(fakeDir, 'r');
+  writeFileSync(fakeR, '#!/bin/sh\necho "R version 9.9.9"\n');
+  await stopNode();
+  await startNode({
+    runtimes: { go: { path: '' }, php: { path: '' }, perl: { path: '' }, r: { path: fakeR } },
+  });
+  {
+    const rt = await api('/api/v2/runtimes');
+    const list = Array.isArray(rt.body) ? rt.body : [];
+    check('wrapper/r-not-registered-without-sh', !list.some((x) => x.language === 'r'),
+      `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
+    const health = await api('/health');
+    check('wrapper/health-explains-missing-shell', /脚本包装器/.test(health.body?.missing?.r ?? ''),
+      `missing.r=${health.body?.missing?.r ?? '无'}`);
+    const run = await rExecute('cat(1);');
+    check('wrapper/execute-rejected', run.status === 400 &&
+      /runtime is unknown/.test(run.body?.message ?? ''),
+      `status=${run.status} message=${run.body?.message ?? ''}`);
+  }
+  rmSync(fakeDir, { recursive: true, force: true });
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;

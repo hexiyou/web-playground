@@ -107,6 +107,19 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
       '中文须 use utf8 + binmode(STDOUT, ":encoding(UTF-8)")',
     ],
   },
+  {
+    lang: 'r',
+    label: 'R',
+    extensions: ['R', 'r'],
+    browserSandbox: 'worker',
+    switchable: [],
+    nativeApis: [
+      '（仅服务端执行）',
+      'Cygwin R 4.2 · 入口是 #!/bin/sh 脚本，由同目录 sh.exe 包装启动',
+      '单阶段 --vanilla --slave --file=；风味由 --version 的 Platform 行动态探测',
+      '宿主缺 cyglapack-0.dll 时 stats 不可用，stderr 如实告警不掩盖',
+    ],
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

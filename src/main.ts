@@ -120,7 +120,7 @@ function renderLangOptions(): void {
 function renderSandboxOptions(): void {
   const cap = currentCap();
   sandboxSel.replaceChildren();
-  // 纯服务端语言（Go / PHP / Perl）没有浏览器载体，如实显示「仅服务端」而不是伪造 Worker/iframe 选项。
+  // 纯服务端语言（Go / PHP / Perl / R）没有浏览器载体，如实显示「仅服务端」而不是伪造 Worker/iframe 选项。
   if (cap.switchable.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
@@ -196,6 +196,13 @@ async function languageExtension(lang: LangId) {
       import('@codemirror/legacy-modes/mode/perl'),
     ]);
     return StreamLanguage.define(perl);
+  }
+  if (lang === 'r') {
+    const [{ StreamLanguage }, { r }] = await Promise.all([
+      import('@codemirror/language'),
+      import('@codemirror/legacy-modes/mode/r'),
+    ]);
+    return StreamLanguage.define(r);
   }
   const { css } = await import('@codemirror/lang-css');
   return css();

@@ -269,6 +269,36 @@ print "cwd = ", getcwd(), "\\n";
     ],
     hint: '仅服务端执行：先 npm run server 启动本机执行节点。本机用 Cygwin Perl 5.32（非原生 Windows Perl），路径写在 servers/local/runtimes.local.json 的 perl.path；节点每次动态探测并把 $^O 如实登记到 probes.runtimeFlavor。中文要 use utf8 + binmode 编码层配套。结果仅参考、不可用于判分。',
   },
+  r: {
+    files: [
+      {
+        name: 'main.R',
+        content: `# Cygwin R 4.2：入口 /usr/bin/r 是 #!/bin/sh 脚本，由节点用同目录 sh.exe 包装启动
+# --vanilla 不读 ~/.Rprofile / .Renviron，--slave 压掉启动 banner
+nums <- c(1, 2, 3, 4, 5)
+
+cat("你好，playground\\n")
+cat("sum =", sum(nums), "\\n")
+
+line <- readLines("stdin", n = 1, warn = FALSE)
+cat("stdin =", if (length(line)) line else "", "\\n")
+
+cat("upper =", toupper("r ok"), "\\n")
+cat("os =", R.version$os, "\\n")
+cat("cwd =", getwd(), "\\n")
+cat("json =", paste0('{"city":"昆明","nums":[', paste(nums, collapse = ","), ']}'), "\\n")
+
+# 本机 Cygwin R 缺 cyglapack-0.dll ⇒ stats 命名空间加载失败，
+# sd() / lm() 这类 stats 函数不可用（stderr 有启动告警，节点刻意不掩盖）。
+# base 与 utils / graphics / grDevices 仍可用；中文按 UTF-8 字节，locale 是 C.UTF-8。
+# getwd() 是 /cygdrive/c/...，分隔符是 / —— 和 Git Bash 的 MSYS2 是两套运行时。
+# 附加 .R 文件写进同一临时目录，source("helper.R") 可加载。
+# 没有内核级隔离，结果仅参考、不可用于判分。
+`,
+      },
+    ],
+    hint: '仅服务端执行：先 npm run server 启动本机执行节点。本机用 Cygwin R 4.2，入口是 shell 脚本而非 exe，路径写在 servers/local/runtimes.local.json 的 r.path；节点用同目录 sh.exe 包装启动并净化宿主 MSYS2 / BASH_FUNC 环境。stats 命名空间在本机缺 cyglapack-0.dll，sd()/lm() 不可用且 stderr 有告警；默认示例只用 base + utils。结果仅参考、不可用于判分。',
+  },
   css: {
     files: [
       {

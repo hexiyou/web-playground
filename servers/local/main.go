@@ -152,11 +152,24 @@ type executeResponse struct {
 
 // ---------------------------------------------------------------- 运行时规格表
 
-/** 一个执行阶段要跑什么。env 由 node.stageEnv(spec) 统一生成，不在 plan 里散落。 */
+/**
+ * 脚本型入口的包装启动器：Windows CreateProcess 不认 `#!/bin/sh`，这类入口
+ * （Cygwin /usr/bin/r、MSYS2 的脚本、WSL 的 .sh）必须由解释器显式启动。
+ * name 是真正 exec 的程序，argv 是加在业务参数之前的前缀参数。
+ * 这是通用机制，不绑定任何语言；探测与运行共用同一份转换，避免「探测能跑执行挂」。
+ */
+type launcher struct {
+	name string
+	argv []string
+}
+
+/** 一个执行阶段要跑什么。env 由 node.stageEnv(spec, tool) 统一生成，不在 plan 里散落。 */
 type execPlan struct {
 	name string
 	argv []string
 	tag  string
+	/** 可选：wrap 存在时真正 exec 的是 wrap.name，参数为 wrap.argv + argv。 */
+	wrap *launcher
 }
 
 type runtimeSpec struct {
@@ -171,10 +184,47 @@ type runtimeSpec struct {
 	entryName  string   // files[0].name 为空时的默认主文件名
 	envStrip   []string // 从宿主环境里剥掉的同名变量
 	envSet     []string // 强制覆盖的环境变量
-	probeExtra map[string]string
-	prepare    func(dir, version string) error                                     // 生成 go.mod 之类
-	compile    func(dir, exeName, tool string) *execPlan                            // nil = 单阶段语言
-	run        func(dir, exeName, entry, tool string, args []string) execPlan
+	/** 可选：把配置/探测到的 tool 转成包装启动器（脚本型入口专用）。 */
+	wrapEntry func(tool string) *launcher
+	/** 可选：依赖 tool 绝对路径才能算出的环境变量（如 Cygwin 的 PATH / HOME）。 */
+	envFromTool func(tool string) []string
+	probeExtra  map[string]string
+	prepare     func(dir, version string) error           // 生成 go.mod 之类
+	compile     func(dir, exeName, tool string) *execPlan // nil = 单阶段语言
+	run         func(dir, exeName, entry, tool string, args []string) execPlan
+}
+
+/**
+ * Cygwin 脚本入口的通用包装：同目录必须有 sh.exe（bash 的硬链接）。
+ * ★ 不能把脚本路径交给 Windows 直接 exec —— 会报 WinError 193「不是有效的 Win32 应用程序」。
+ */
+func cygwinShellWrap(tool string) *launcher {
+	dir := filepath.Dir(tool)
+	sh := "sh.exe"
+	if runtime.GOOS != "windows" {
+		sh = "sh"
+	}
+	return &launcher{name: filepath.Join(dir, sh), argv: []string{tool}}
+}
+
+/**
+ * Cygwin 程序从 Git Bash（MSYS2）环境启动会被 PATH / argv 路径自动转换污染：
+ * 实测 `sh.exe <r> --version` 返回 127 且 stdout/stderr 全空；换成这套干净环境后
+ * 90ms 正常输出。⇒ PATH 里 Cygwin bin 必须优先，MSYSTEM / MSYS2_* 一律剥掉。
+ * 这是通用能力，任何「非原生 POSIX 运行时」都能复用，不写死 R。
+ */
+func cygwinCleanEnv(tool string) []string {
+	bin := filepath.Dir(tool)
+	root := filepath.Dir(bin)
+	sysroot := os.Getenv("SystemRoot")
+	if sysroot == "" {
+		sysroot = `C:\Windows`
+	}
+	return []string{
+		"PATH=" + bin + ";" + filepath.Join(sysroot, "System32") + ";" + sysroot,
+		"HOME=" + filepath.Join(root, "home"),
+		"CYGWIN=nodosfilewarning",
+	}
 }
 
 var safeFileName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
@@ -239,47 +289,89 @@ func builtinSpecs() []*runtimeSpec {
 				"network": "allow_url_fopen=0,allow_url_include=0;curl/sockets-not-enforced",
 				"phpIni":  "host-default",
 			},
-		run: func(dir, exeName, entry, tool string, args []string) execPlan {
-			argv := []string{
-				"-d", "allow_url_fopen=0",
-				"-d", "allow_url_include=0",
-				"-d", "display_errors=stderr",
-				"-d", "html_errors=0",
-				"-d", "log_errors=0",
-				entry,
-			}
-			argv = append(argv, args...)
-			return execPlan{name: tool, argv: argv, tag: "run"}
+			run: func(dir, exeName, entry, tool string, args []string) execPlan {
+				argv := []string{
+					"-d", "allow_url_fopen=0",
+					"-d", "allow_url_include=0",
+					"-d", "display_errors=stderr",
+					"-d", "html_errors=0",
+					"-d", "log_errors=0",
+					entry,
+				}
+				argv = append(argv, args...)
+				return execPlan{name: tool, argv: argv, tag: "run"}
+			},
 		},
-	},
-	{
-		language: "perl",
-		aliases:  []string{"perl5"},
-		execName: "perl",
-		// 一次探测同时拿版本与宿主风味：$^V=v5.32.1，$^O=cygwin / MSWin32 / linux。
-		// 不硬编码「这是 Cygwin」——同一条 spec 也能挂 Strawberry / ActivePerl / Linux perl。
-		detectArgs: []string{"-e", `printf "%s|%s\n", $^V, $^O;`},
-		versionRe:  regexp.MustCompile(`v?([0-9]+\.[0-9]+\.[0-9]+)`),
-		flavorRe:   regexp.MustCompile(`\|([A-Za-z0-9_]+)`),
-		extensions: []string{".pl"},
-		entryName:  "main.pl",
-		// 剥掉宿主的模块搜索路径，避免把机器上装的第三方模块悄悄带进执行环境。
-		envStrip: []string{"PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MM_OPT"},
-		probeExtra: map[string]string{
-			"stages":      "run",
-			"network":     "no-enforcement;IO::Socket-available",
-			"flavorFrom":  "$^O",
-			"includePath": "-I.",
+		{
+			language: "perl",
+			aliases:  []string{"perl5"},
+			execName: "perl",
+			// 一次探测同时拿版本与宿主风味：$^V=v5.32.1，$^O=cygwin / MSWin32 / linux。
+			// 不硬编码「这是 Cygwin」——同一条 spec 也能挂 Strawberry / ActivePerl / Linux perl。
+			detectArgs: []string{"-e", `printf "%s|%s\n", $^V, $^O;`},
+			versionRe:  regexp.MustCompile(`v?([0-9]+\.[0-9]+\.[0-9]+)`),
+			flavorRe:   regexp.MustCompile(`\|([A-Za-z0-9_]+)`),
+			extensions: []string{".pl"},
+			entryName:  "main.pl",
+			// 剥掉宿主的模块搜索路径，避免把机器上装的第三方模块悄悄带进执行环境。
+			envStrip: []string{"PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MM_OPT"},
+			probeExtra: map[string]string{
+				"stages":      "run",
+				"network":     "no-enforcement;IO::Socket-available",
+				"flavorFrom":  "$^O",
+				"includePath": "-I.",
+			},
+			run: func(dir, exeName, entry, tool string, args []string) execPlan {
+				// Perl 5.26+ 把 . 从 @INC 移除了；不显式 -I. 的话 require 'helper.pl' 会失败。
+				// 本地可信代码片段，加回当前目录是为了与 Go/PHP 的「附加文件同目录」语义一致。
+				argv := []string{"-I", ".", entry}
+				argv = append(argv, args...)
+				return execPlan{name: tool, argv: argv, tag: "run"}
+			},
 		},
-		run: func(dir, exeName, entry, tool string, args []string) execPlan {
-			// Perl 5.26+ 把 . 从 @INC 移除了；不显式 -I. 的话 require 'helper.pl' 会失败。
-			// 本地可信代码片段，加回当前目录是为了与 Go/PHP 的「附加文件同目录」语义一致。
-			argv := []string{"-I", ".", entry}
-			argv = append(argv, args...)
-			return execPlan{name: tool, argv: argv, tag: "run"}
+		{
+			language: "r",
+			aliases:  []string{"rlang", "rscript"},
+			execName: "r",
+			// --version 输出里同时带版本与 Platform 行（x86_64-pc-cygwin）；
+			// 风味由运行时自报，不硬编码，换 Linux / mingw 的 R 同一条 spec 不用改。
+			detectArgs: []string{"--version"},
+			versionRe:  regexp.MustCompile(`R version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)`),
+			flavorRe:   regexp.MustCompile(`(?i)Platform: [^ ]*?(cygwin|mingw|linux|darwin|windows)`),
+			extensions: []string{".R", ".r"},
+			entryName:  "main.R",
+			// ★ 脚本型入口：r 是 #!/bin/sh wrapper（8.9 KB），不是 PE 可执行文件。
+			// Windows 直接 exec 会报 WinError 193；必须由同目录 sh.exe 显式启动。
+			wrapEntry:   cygwinShellWrap,
+			envFromTool: cygwinCleanEnv,
+			// 剥掉宿主 MSYS2 的 PATH 与 R 的用户级配置：PATH 由 envFromTool 重设成 Cygwin bin 优先。
+			// ★ BASH_ENV 是关键：宿主注入的 shell-runtime-bash-env.sh 会被 Cygwin sh 自动 source，
+			// 把 WorkBuddy 的 safe-bin（MSYS2 版 CRLF 脚本）重新塞回 PATH，R 启动时调用 rm
+			// 就会命中它，stderr 刷一屏 "$'\r': command not found"。不剥掉等于环境净化白做。
+			envStrip: []string{
+				"PATH", "HOME", "CYGWIN", "MSYSTEM", "MSYS2_ARG_CONV_EXCL", "MSYS_NO_PATHCONV",
+				"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "SHELL", "MSYS2_PATH_TYPE",
+				"R_HOME", "R_LIBS", "R_LIBS_USER", "R_PROFILE", "R_PROFILE_USER",
+				"R_ENVIRON", "R_ENVIRON_USER", "R_DEFAULT_PACKAGES",
+			},
+			probeExtra: map[string]string{
+				"stages":         "run",
+				"entryKind":      "shell-script;#!/bin/sh",
+				"wrapper":        "sh.exe <script>",
+				"network":        "no-enforcement;serverSocket-available",
+				"flavorFrom":     "R --version / Platform",
+				"startupWarning": "host-specific;stats-namespace-may-be-unavailable",
+			},
+			run: func(dir, exeName, entry, tool string, args []string) execPlan {
+				// --vanilla 不读 ~/.Rprofile / .Renviron / 工作区，--slave 压掉 banner。
+				// ★ 刻意不设 R_DEFAULT_PACKAGES 去掩盖启动告警：宿主缺 cyglapack-0.dll 时
+				// stats 命名空间加载失败，必须让 stderr 如实说出来，不能假装 R 是完整的。
+				argv := []string{"--vanilla", "--slave", "--file=" + entry}
+				argv = append(argv, args...)
+				return execPlan{name: tool, argv: argv, tag: "run", wrap: cygwinShellWrap(tool)}
+			},
 		},
-	},
-}
+	}
 }
 
 // ---------------------------------------------------------------- 节点
@@ -331,9 +423,22 @@ func (n *node) resolveRuntime(spec *runtimeSpec) (*resolvedRuntime, error) {
 		tool, source = p, "path"
 	}
 
+	// ★ 探测与执行必须用同一份包装 + 同一份净化环境，否则会出现
+	// 「版本表能报出来、真执行却 127」这种能力表撒谎。
+	name, argv := tool, append([]string{}, spec.detectArgs...)
+	if spec.wrapEntry != nil {
+		w := spec.wrapEntry(tool)
+		if fi, statErr := os.Stat(w.name); statErr != nil || fi.IsDir() {
+			return nil, fmt.Errorf("%s 的脚本包装器不可用：%s（解释器要与入口同目录）", spec.language, w.name)
+		}
+		name = w.name
+		argv = append(append([]string{}, w.argv...), argv...)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, tool, spec.detectArgs...).Output()
+	cmd := exec.CommandContext(ctx, name, argv...)
+	cmd.Env = n.stageEnv(spec, tool)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("%s 版本探测失败（%s）：%v", spec.language, tool, err)
 	}
@@ -402,19 +507,32 @@ func validateFiles(files []requestFile, spec *runtimeSpec) error {
 	return nil
 }
 
-func (n *node) stageEnv(spec *runtimeSpec) []string {
+func (n *node) stageEnv(spec *runtimeSpec, tool string) []string {
 	env := os.Environ()
+	// ★ Windows 环境变量名大小写不敏感（Path / PATH / path 是同一个键），
+	// 用 strings.ToUpper 归一化，否则「剥了 PATH 但漏了 Path」会把宿主 PATH 放进来。
 	strip := map[string]bool{}
 	for _, k := range spec.envStrip {
-		strip[k] = true
+		strip[strings.ToUpper(k)] = true
 	}
-	out := make([]string, 0, len(env)+len(spec.envSet))
+	set := append([]string{}, spec.envSet...)
+	if spec.envFromTool != nil {
+		set = append(set, spec.envFromTool(tool)...)
+	}
+	out := make([]string, 0, len(env)+len(set))
 	for _, kv := range env {
-		if !strip[strings.SplitN(kv, "=", 2)[0]] {
-			out = append(out, kv)
+		upper := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
+		// ★ 宿主可能把 shell 函数以 BASH_FUNC_xxx%% 导出（WorkBuddy 的安全删除守卫
+		// 就是 BASH_FUNC_RM%% / RMDIR%% / UNLINK%%）。Cygwin bash 启动时会 import 它们，
+		// 覆盖 rm 等内建命令名，让 R 启动时调用的 rm 命中 MSYS2 版 CRLF 脚本，
+		// stderr 刷一屏 "$'\r': command not found"。A′ 不需要任何宿主导出函数，一律剥掉。
+		if strip[upper] || strings.HasPrefix(upper, "BASH_FUNC_") {
+			continue
 		}
+		out = append(out, kv)
 	}
-	return append(out, spec.envSet...)
+	// 追加在末尾：os/exec 的 dedupEnv 保留最后一次出现的同名键，所以 set 能覆盖宿主值。
+	return append(out, set...)
 }
 
 // readCapped 最多读 max+1 字节，既实现输出截断，也不把用户代码写出的大文件整个吞进内存。
@@ -476,7 +594,12 @@ func (n *node) runStage(
 	}
 	defer inFile.Close()
 
-	cmd := exec.CommandContext(stageCtx, plan.name, plan.argv...)
+	execName, execArgv := plan.name, plan.argv
+	if plan.wrap != nil {
+		execName = plan.wrap.name
+		execArgv = append(append([]string{}, plan.wrap.argv...), plan.argv...)
+	}
+	cmd := exec.CommandContext(stageCtx, execName, execArgv...)
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Dir = dir
 	cmd.Env = env
@@ -640,7 +763,7 @@ func (n *node) execute(req executeRequest) (int, any) {
 		Version:  rt.version,
 		Probes:   probes,
 	}
-	env := n.stageEnv(spec)
+	env := n.stageEnv(spec, rt.tool)
 
 	if spec.compile != nil {
 		compileOut := n.runStage(

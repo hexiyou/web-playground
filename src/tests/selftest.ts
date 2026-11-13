@@ -47,6 +47,7 @@ const FILE_NAMES: Record<LangId, string> = {
   go: 'main.go',
   php: 'main.php',
   perl: 'main.pl',
+  r: 'main.R',
 };
 
 function fileName(lang: LangId): string {
@@ -734,6 +735,138 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     const escapeSrc = 'print 1;';
     r = await run('perl', escapeSrc, { files: [{ name: '../evil.pl', content: escapeSrc }] });
     pass('perl/path-escape', 'perl', '文件名路径逃逸被节点拒绝',
+      r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+  }
+
+  // ---------- R（A′ 本机进程执行节点 · Cygwin R · 脚本型入口 · 仅 server） ----------
+  // 这一门刻意选 #!/bin/sh wrapper 作为入口。除常规接线判据外，把 v0.8 实测到的
+  // 三条新坑做成可执行证据：脚本必须包装启动、宿主 BASH_FUNC/safe-bin 不能漏进 sh、
+  // 宿主缺 cyglapack-0.dll 时 stats 不可用必须如实告警（不许用 R_DEFAULT_PACKAGES 掩盖）。
+  // ★ 风味不硬编码：节点从 --version 的 Platform 行解析，判据让 R 自报 R.version$os 核对。
+  {
+    const rCap = capabilityFor(caps, 'r');
+    pass('r/wiring', 'r', 'R 只有 server 位置且不可判分',
+      rCap.available && rCap.targets.length === 1 && rCap.targets[0] === 'server' &&
+        rCap.prefer === 'server' && !rCap.trusted && rCap.trust === 'advisory' &&
+        rCap.isolation.includes('process-only'),
+      `targets=${rCap.targets.join('/')} trust=${rCap.trust} isolation=${rCap.isolation.join('/')}`);
+
+    const stderrOf = (res: RunResult) =>
+      res.outputs.filter((o) => o.stream === 'stderr').map((o) => o.text).join('');
+
+    let r = await run('r', 'cat("R-STDOUT-MARK\\n");');
+    pass('r/stdout', 'r', 'Cygwin R stdout 回显',
+      r.status === 'ok' && text(r).includes('R-STDOUT-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+    pass('r/capability', 'r', '脚本入口包装 / 单阶段 / 路径来源 / 宿主风味 / 无内存谎报',
+      r.target === 'server' && r.engine === 'local.process.v1' &&
+        r.probes?.stages === 'run' &&
+        r.probes?.entryKind === 'shell-script;#!/bin/sh' &&
+        r.probes?.wrapper === 'sh.exe <script>' &&
+        (r.probes?.runtimePathSource === 'config' || r.probes?.runtimePathSource === 'path') &&
+        typeof r.probes?.runtimeVersion === 'string' && r.probes.runtimeVersion.length > 0 &&
+        typeof r.probes?.runtimeFlavor === 'string' && r.probes.runtimeFlavor.length > 0 &&
+        /no-enforcement/.test(r.probes?.network ?? '') &&
+        r.probes?.memoryCapability === 'no-memory-cap' && r.usage?.memoryBytes === undefined,
+      `probes=${JSON.stringify(r.probes ?? {}).slice(0, 260)}`);
+
+    r = await run('r', 'cat(as.character(R.version$os), "\\n");');
+    pass('r/flavor', 'r', 'runtimeFlavor 与解释器自报 R.version$os 一致（不硬编码宿主）',
+      r.status === 'ok' && text(r).trim().length > 0 &&
+        text(r).trim().startsWith(String(r.probes?.runtimeFlavor ?? '不可能匹配')),
+      `flavor=${r.probes?.runtimeFlavor ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('r', 'cat(as.character(getRversion()), "\\n");');
+    pass('r/version', 'r', 'runtimes 动态探测的版本与 getRversion() 自报一致',
+      r.status === 'ok' && text(r).includes(String(r.probes?.runtimeVersion ?? '不可能匹配')),
+      `reported=${r.probes?.runtimeVersion ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('r', 'x <- readLines("stdin", n=1, warn=FALSE); cat("STDIN:", x, "\\n");', { stdin: 'marker-42' });
+    pass('r/stdin', 'r', 'stdin 注入并读回',
+      r.status === 'ok' && text(r).includes('STDIN: marker-42'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('r', 'cat("BEFORE\\n"); cat(file=stderr(), "R-STDERR-MARK\\n"); quit(status=2, save="no");');
+    pass('r/stderr', 'r', 'stderr 与真实退出码',
+      hasStderr(r) && text(r).includes('R-STDERR-MARK') && r.exitCode === 2,
+      `status=${r.status} exitCode=${r.exitCode} stderr=${text(r).slice(0, 100)}`);
+
+    r = await run('r', 'cat("中文标记：昆明\\n");');
+    pass('r/utf8', 'r', '中文 UTF-8 往返（C.UTF-8 + 源码写文件）',
+      r.status === 'ok' && text(r).includes('中文标记：昆明'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    const mainSrc = 'source("helper.R"); cat("HELPER:", label(), "\\n");';
+    r = await run('r', mainSrc, {
+      files: [
+        { name: 'main.R', content: mainSrc },
+        { name: 'helper.R', content: 'label <- function() "HELPER-MARK"' },
+      ],
+    });
+    pass('r/multi-file', 'r', '附加 .R 文件同目录可 source',
+      r.status === 'ok' && text(r).includes('HELPER: HELPER-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    r = await run('r', 'cat("os=", R.version$os, "\\nwd=", getwd(), "\\n");');
+    const outR = text(r);
+    const flavorR = String(r.probes?.runtimeFlavor ?? '');
+    const cygwinOkR = /os=\s*cygwin/.test(outR) && /wd=\s*\/cygdrive\//.test(outR);
+    const genericOkR = new RegExp(`os=\\s*${flavorR}`).test(outR) && /wd=\s*\S/.test(outR);
+    pass('r/cygwin-semantics', 'r', '宿主风味对应的路径语义（R.version$os / getwd）',
+      r.status === 'ok' && (flavorR === 'cygwin' ? cygwinOkR : genericOkR),
+      `flavor=${flavorR} out=${outR.replace(/\n/g, ' | ').slice(0, 160)}`);
+
+    r = await run('r', 'cat("A\\nB\\n");');
+    pass('r/crlf', 'r', '输出保持 LF，Cygwin 未把 \\n 转成 CRLF',
+      r.status === 'ok' && text(r).includes('A\nB') && !text(r).includes('\r'),
+      `status=${r.status} out=${JSON.stringify(text(r)).slice(0, 80)}`);
+
+    // ★ 坑的可执行证据：宿主把安全删除守卫以 BASH_FUNC_RM%% 等导出函数注入环境，
+    //   Cygwin sh 会 import 它们覆盖 rm ⇒ R 启动时调用的 rm 命中 MSYS2 版 CRLF 脚本。
+    //   节点必须把 BASH_FUNC_* / BASH_ENV / MSYS2 PATH 全剥掉，stderr 才干净。
+    r = await run('r', 'cat("ENV-CLEAN\\n");');
+    pass('r/clean-host-env', 'r', '宿主 BASH_FUNC / safe-bin 未漏进 Cygwin sh（环境净化生效）',
+      r.status === 'ok' && text(r).includes('ENV-CLEAN') &&
+        !/safe-bin|pipefail|command not found/.test(stderrOf(r)),
+      `stderr=${JSON.stringify(stderrOf(r).slice(0, 160))}`);
+
+    // ★ 不谎报：设 R_DEFAULT_PACKAGES=base 能盖掉告警，但 sd()/lm() 仍不可用，
+    //   那是把缺陷藏起来。判据押「解释器自报 + 不可用时必须有告警」，换机器修好也不误红。
+    r = await run('r', 'cat("STATS=", requireNamespace("stats", quietly=TRUE), "\\n");');
+    const statsOut = text(r);
+    const statsErr = stderrOf(r);
+    const statsFalse = /STATS=\s*FALSE/.test(statsOut);
+    pass('r/default-packages-truth', 'r', '默认包可用性自报；不可用时 stderr 如实告警（不掩盖）',
+      r.status === 'ok' && /STATS=\s*(TRUE|FALSE)/.test(statsOut) &&
+        (!statsFalse || /defaultPackages/.test(statsErr)),
+      `out=${statsOut.trim().slice(0, 80)} stderr告警=${/defaultPackages/.test(statsErr)}`);
+
+    r = await run('r', 'cat(tryCatch({ s <- serverSocket(0); close(s); "SOCKET-OK" }, error=function(e) "SOCKET-ERR"), "\\n");');
+    pass('r/socket', 'r', 'socket 可监听 ⇒ 如实登记「无内核级禁网」',
+      r.status === 'ok' && text(r).includes('SOCKET-OK') && /no-enforcement/.test(r.probes?.network ?? ''),
+      `status=${r.status} out=${text(r).slice(0, 80)} probes.network=${r.probes?.network ?? '无'}`);
+
+    r = await run('r', 'cat("A";');
+    pass('r/syntax-error', 'r', '语法错误进 stderr 且带非零退出码',
+      hasStderr(r) && /Error:/.test(text(r)) && r.exitCode !== 0 && r.exitCode !== null,
+      `status=${r.status} exitCode=${r.exitCode} out=${text(r).slice(0, 140)}`);
+
+    // R 启动本身约 700ms，判据只押 status=TO，不押毫秒数。
+    r = await run('r', 'Sys.sleep(30);', { wallMs: 1500 });
+    pass('r/timeout', 'r', '墙钟超时被终止并回报 TO',
+      r.status === 'timeout' && r.timedOut &&
+        r.diagnostics.some((d) => /TO|超时|终止/.test(d.message)),
+      `status=${r.status} timedOut=${r.timedOut} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('r', 'for (i in 1:4000) cat("012345678901234567890123456789\\n");', { outputBytes: 512 });
+    pass('r/output-limit', 'r', '输出字节限额生效',
+      r.status === 'output-limit' && text(r).length <= 512 + 64,
+      `status=${r.status} bytes=${text(r).length}`);
+
+    const escapeSrcR = 'cat(1);';
+    r = await run('r', escapeSrcR, { files: [{ name: '../evil.R', content: escapeSrcR }] });
+    pass('r/path-escape', 'r', '文件名路径逃逸被节点拒绝',
       r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
       `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
   }

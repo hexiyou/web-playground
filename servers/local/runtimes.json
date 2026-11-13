@@ -2,6 +2,7 @@
   "runtimes": {
     "go": { "path": "", "disabled": false },
     "php": { "path": "", "disabled": false },
-    "perl": { "path": "", "disabled": false }
+    "perl": { "path": "", "disabled": false },
+    "r": { "path": "", "disabled": false }
   }
 }

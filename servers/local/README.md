@@ -10,6 +10,13 @@
 > 第一次真正用「手动配置运行时路径」挂**不在 PATH、没写注册表**的便携式解释器；新增
 > `flavor` 字段由 `$^O` 动态探测，不硬编码宿主。**Cygwin 环境实测报告与完整坑清单见 §8** ——
 > 后续要接 MSYS2 / WSL / 其它 POSIX 风味运行时之前，务必先读那一节。
+>
+> v0.8 变更：接入第十一门语言 **R**（本机是 **Cygwin R 4.2.1**）。与 Perl 不同，
+> `D:\cygwin64\bin\r` 的入口**本质是 `#!/bin/sh` 脚本，不是可执行文件** ⇒ 节点新增通用
+> `wrapEntry`（同目录 `sh.exe <script>` 包装）与 `envFromTool`（干净 PATH/HOME、剥宿主
+> `BASH_FUNC_*` 导出函数）两项能力；`execute()` 仍然零语言分支。
+> **脚本型入口实测与坑清单见 §9** —— 后续要挂任何 shebang wrapper / 便携版 launcher
+> 之前，务必先读 §8 + §9 两节。
 
 ## 1. 这是什么 / 为什么与官方推荐分叉
 
@@ -129,8 +136,20 @@ ActivePerl 或 Linux perl 时，只有 flavor 变，节点代码一行不用改�
 
 `builtinSpecs()` 里加一条 `runtimeSpec`：`language / aliases / execName / detectArgs /
 versionRe / flavorRe / extensions / entryName / envStrip / envSet / probeExtra /
-prepare / compile / run`。`flavorRe` 可选，用来从探测输出里解析宿主风味（不硬编码）。
-`compile` 为 `nil` 就是单阶段语言（PHP / Perl），非 nil 走编译 + 运行两阶段（Go）。
+prepare / compile / run`，v0.8 起再加两个可选钩子：
+`wrapEntry(tool) *launcher` 与 `envFromTool(tool) []string`。
+`flavorRe` 可选，用来从探测输出里解析宿主风味（不硬编码）。
+`compile` 为 `nil` 就是单阶段语言（PHP / Perl / R），非 nil 走编译 + 运行两阶段（Go）。
+
+- **`wrapEntry`**：入口不是 PE 而是 shebang 脚本时（Cygwin R 的 `#!/bin/sh`），Windows
+  `CreateProcess` 直接 exec 会报 `WinError 193`。spec 返回一个 `launcher{name, argv}`，
+  真正 exec 的是 `launcher.name`，参数为 `launcher.argv + plan.argv`。
+  ★ **探测与执行必须共用同一个包装**：`resolveRuntime()` 跑 `--version` 时也要包装 +
+  用同一套 env，否则会出现「runtimes 能报出版本、真执行却 127」的假绿。
+- **`envFromTool`**：给非原生运行时重建干净环境（PATH / HOME / CYGWIN），
+  再由 `stageEnv()` 按 `envStrip` 剥宿主变量；变量名一律 `ToUpper` 归一化，
+  并**无条件剥掉 `BASH_FUNC_` 前缀**（详见 §9）。
+
 文件名白名单、环境净化、`go.mod` 生成、启动参数都由 spec 描述，`execute()` 里没有
 任何 `if language == ...` 分支。前端仍按固定五步（登记 → Runner 映射 → 注入 →
 CodeMirror → 判据负例），**UI 一行不改**。
@@ -138,17 +157,20 @@ CodeMirror → 判据负例），**UI 一行不改**。
 ### 3.4 判据
 
 `npm run check:node` 在独立端口（默认 2099，可 `PLAYGROUND_NODE_CHECK_PORT` 改）重启节点
-四次，只押 HTTP 接口能看到的事实：
+五次，只押 HTTP 接口能看到的事实：
 
 | 场景 | 押什么 |
 |---|---|
-| A 配了 `php.path` / `perl.path` | `source === "config"` · `health.config` 指向临时文件且 `missing={}` · PHP/Perl execute 真吐出字节 · `perl.flavor === $^O` 且版本一致 · 中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF · Go 两阶段不回归 |
-| B path 指向不存在 | php 与 perl 都从 runtimes 消失 · `health.missing` 说明原因 · 两门 `POST execute` 都明确 400 `runtime is unknown` |
-| C `disabled: true` | PATH 里明明有 php、配置里明明有 perl，仍不登记（证明「关」优先于探测） |
-| D `path: ""` | php 回退 PATH `source="path"` 且 execute 真跑通；**perl 按 PATH 里到底有没有它如实判**（本机没有 ⇒ 不登记，反证 A 场景全靠配置路径） |
+| A 配了 `php.path` / `perl.path` / `r.path` | `source === "config"` · `health.config` 指向临时文件且 `missing={}` · 三门 execute 真吐出字节 · `perl.flavor === $^O` / `r.flavor` 来自 `--version` 的 Platform 行且版本一致 · 中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF · **R 的 `entryKind=shell-script;#!/bin/sh` / `wrapper=sh.exe <script>` / stderr 无 `safe-bin` 污染 / 不谎报默认包** · Go 两阶段不回归 |
+| B path 指向不存在 | php / perl / r 都从 runtimes 消失 · `health.missing` 说明原因 · 三门 `POST execute` 都明确 400 `runtime is unknown` |
+| C `disabled: true` | PATH 里明明有 php、配置里明明有 perl 与 r，仍不登记（证明「关」优先于探测） |
+| D `path: ""` | php 回退 PATH `source="path"` 且 execute 真跑通；**perl / r 按 PATH 里到底有没有它如实判**（本机都没有 ⇒ 不登记，反证 A 场景全靠配置路径） |
+| E 包装器缺失 | 把 R 入口拷到没有 `sh.exe` 的临时目录 ⇒ r 不登记、`health.missing` 明写「脚本包装器不可用」、execute 400。**反证 `wrapEntry` 不是摆设** |
 
-v0.7 共 **26 条**。D 场景那条是「手动配置运行时路径」的价值证据：Cygwin Perl 不在 PATH，
-清空 `path` 后能力表必须立刻置灰，不许拿缓存里的旧路径假装还能跑。
+v0.8 共 **46 条**（node 4 · config 24 · badpath 7 · disabled 4 · fallback 4 · wrapper 3；v0.7 是 26 条）。
+D 场景那条是「手动配置运行时路径」的价值证据：Cygwin Perl / R 都不在 PATH，
+清空 `path` 后能力表必须立刻置灰，不许拿缓存里的旧路径假装还能跑；E 场景是「脚本型入口」
+的价值证据：入口能 `os.Stat` 到 ≠ 能启动，包装器不在就必须置灰。
 
 报告落在 `.node-check-report.json`（不入库）。**真机自检（浏览器 CDP）只证明前端资产零外联，
 证明不了节点进程的网络行为**，配置路径是否生效只能靠这一层判据。
@@ -258,10 +280,12 @@ stderr + `exitCode`，不要押 `status=error`。
    <lang>=<version>` 把预编译包放进 `/piston/packages` volume，宿主机不用装解释器，
    但**动作本身没省**，compose 也不会自动装，且容器重建/无状态部署会清零。
 
-## 7. 加下一门语言（Ruby / R / Java…）
+## 7. 加下一门语言（Ruby / Java / WSL…）
 
 节点侧：**在 `builtinSpecs()` 加一条 spec**（§3.3），必要时在 `runtimes.json` 加一条
 `{ "path": "" }`；本机装好解释器，或在 `runtimes.local.json` 指到便携式路径。
+**先确认入口形态**：若 `path` 指向的是 `#!/bin/sh` / `#!/usr/bin/env ...` 这类脚本而不是
+PE / ELF，必须配 `wrapEntry` + `envFromTool`（§3.3、§9），否则探测阶段就会静默失败。
 前端按项目固定五步：登记 `LangId / LANG_DEFS / SAMPLES` → `LOCAL_LANGUAGES` 补映射
 并把语言加进 `createLocalRunner().languages` → `createRegistry` 注入（`main.ts` 已统一注入）
 → CodeMirror 语法包动态 import → 端到端判据 + 单测层/真机层拆线负例。**UI 一行不改**。
@@ -346,3 +370,95 @@ Windows 风格路径参数也单独验过：`C:\...\main.pl`、`C:/.../main.pl`�
 5. **越「完整」的运行时越要收紧对外的说法**：Cygwin Perl 能力比 WASM 版 Python 完整得多，
    但 A′ 没有笼子 ⇒ 仍是 `process-only` / `advisory`、结果不可判分。
    语言能力变强 ≠ 隔离档变高，这两件事不要混。
+
+## 9. Cygwin R 实测报告与坑清单（v0.8 · 脚本型入口，接任何 shebang launcher 前必读）
+
+> 这一节同样是**实测记录**，不是设计推演。何工这一门刻意指定 Cygwin R，并事先点明
+> 「入口本质是 Bash 脚本，而不是可执行文件，会不会出意外仍是未知数」。结论：
+> **确实出了意外，而且不止一个**：Windows 不能 exec 脚本、宿主环境让 Cygwin sh 静默失败、
+> 宿主导出的 bash 函数污染了 R 的启动脚本。**跑通了，但必须靠通用包装 + 环境净化**，
+> 不是把 `path` 指过去就能用。这三条都不会在纯函数单测里暴露。
+
+### 9.1 环境与接法
+
+| 项 | 实测值 |
+|---|---|
+| 入口 | `D:/cygwin64/bin/r`，**8953 B 文本脚本**，首行 `#!/bin/sh`；同目录 `R` 是同一个 wrapper，`Rscript.exe` 才是原生 PE |
+| 版本 / 风味 | `R version 4.2.1 (2022-06-23) -- "Funny-Looking Kid"` / `Platform: x86_64-pc-cygwin` |
+| 是否 Windows 原生 | 否。Windows 侧看它是**一个不能直接执行的文本文件**，Cygwin 侧才是一个 shell 入口 |
+| 是否在 PATH | **否**（与 Cygwin Perl 一样），`GET /api/v2/runtimes` 里 `source=config` |
+| 怎么挂进来 | `runtimes.local.json` 的 `r.path` 绝对路径 + spec 的 `wrapEntry: cygwinShellWrap` + `envFromTool: cygwinCleanEnv` |
+| 节点侧改动 | `builtinSpecs()` 加一条 r spec + **两个通用钩子**（`launcher` / `execPlan.wrap` / `stageEnv` 前缀净化）；**`execute()` 一个语言分支都没加** |
+| 启动形态 | 单阶段 `sh.exe <r> --vanilla --slave --file=main.R`，响应无 `compile` 字段 |
+| probes 登记 | `stages=run` · `entryKind=shell-script;#!/bin/sh` · `wrapper=sh.exe <script>` · `flavorFrom=R --version / Platform` · `network=no-enforcement;serverSocket-available` · `startupWarning=host-specific;stats-namespace-may-be-unavailable` |
+
+### 9.2 实测表（手工 HTTP + 节点判据 + 浏览器真机三层，全部通过）
+
+| # | 场景 | 结果 |
+|---|---|---|
+| 1 | 入口字节形态 | `#!/bin/sh` · 8953 B · 非 PE |
+| 2 | **反证**：Python `subprocess.run([r, '--version'])` | `OSError [WinError 193] %1 不是有效的 Win32 应用程序` |
+| 3 | **反证**：`sh.exe <r> --version` 直接继承宿主环境 | `rc=127`，stdout / stderr **都 0 字节**（静默失败，最容易误判成「R 没装好」） |
+| 4 | `sh.exe <r> --version` + 干净 env | 86 ms 输出 `R version 4.2.1` / `Platform: x86_64-pc-cygwin` |
+| 5 | `GET /api/v2/runtimes` | `r / 4.2.1 / source=config / flavor=cygwin`，`health.missing={}` |
+| 6 | 纯 ASCII stdout | `cat(...)` 原样回显，`code=0` |
+| 7 | 中文 UTF-8 往返 | `中文标记：昆明` 原样（代码写进 `.R` 文件，不经 argv） |
+| 8 | stdin 注入 | `readLines("stdin", n=1)` 读回 `marker-42` |
+| 9 | stderr + `quit(status=2)` | stderr 分离、`exitCode=2` |
+| 10 | 多文件 `source("helper.R")` | `HELPER: HELPER-MARK` |
+| 11 | `R.version$os` / `getwd()` | `cygwin` / `/cygdrive/c/...` |
+| 12 | CRLF | `A\nB\n` 保持 LF，未转 CRLF |
+| 13 | **宿主 `BASH_FUNC_*` 净化** | stderr 里 `safe-bin` / `pipefail` / `command not found` 全消失 |
+| 14 | `requireNamespace("stats")` 自报 | `STATS= FALSE`，`During startup - Warning message: package 'stats' ... was not found` **保留不掩盖** |
+| 15 | `serverSocket(0)` | `SOCKET-OK` ⇒ 如实登记「无内核级禁网」 |
+| 16 | 语法错误 | `Error:` 进 stderr，退出码非零 |
+| 17 | 墙钟超时 `Sys.sleep(30)` / 1500 ms | `status=TO`，只押状态不押毫秒（R 启动本身约 700 ms） |
+| 18 | 输出字节限额 | `status=OL` 截断 |
+| 19 | `../evil.R` 路径逃逸 | HTTP 400 拒绝 |
+| 20 | **反证**：同目录无 `sh.exe` | r 不登记 · `health.missing` 写「脚本包装器不可用」· execute 400 |
+
+`npm run check:node` **46 条**（含上表 5 / 13 / 14 / 20），`src/tests/r.test.ts` 8 条，
+`selftest.ts` 里 `r/*` 18 条 + `sample/r` 1 条，dev / dist 双层各 138 条全绿。
+
+### 9.3 坑清单（★ = 已做成可执行判据）
+
+| # | 现象 | 根因 | 规避 / 判据 |
+|---|---|---|---|
+| ① ★★ | **直接 exec `D:\cygwin64\bin\r` 报 `WinError 193`** | 它是 `#!/bin/sh` 文本脚本，Windows `CreateProcess` 只认 PE | 通用 `wrapEntry`：用同目录 `sh.exe` 显式执行脚本。判据 `config/r-probes-script-wrapper` 押 `entryKind` / `wrapper`；别改用 `Rscript.exe` 绕过，那样测的就不是何工指定的入口 |
+| ② ★★ | **版本表能报出 r，真执行却 127** | 探测路径和 `execute()` 是两条代码路径，包装器只加在后者就会出现「探测绿、执行红」 | `resolveRuntime()` 探测时**同样**调 `wrapEntry` 与 `n.stageEnv(spec, tool)`。这是「判据绿了只说明我押的那条路是通的」的又一实例 |
+| ③ ★★ | `sh.exe <r> --version` 在宿主环境里 `rc=127` 且**空输出** | 宿主 Git Bash / MSYS2 的 PATH、路径自动转换变量把 Cygwin sh 带偏，失败还没诊断 | `envFromTool = cygwinCleanEnv()` 重建 `PATH=<cygwin bin>;C:\Windows\System32;C:\Windows`、`HOME=<cygwin root>/home`、`CYGWIN=nodosfilewarning`；`envStrip` 显式剥 `MSYSTEM` / `MSYS2_*` / `MSYS_NO_PATHCONV` / `BASH_ENV` / `ENV` / `SHELLOPTS` / `BASHOPTS` 等 |
+| ④ ★★★ | **R stderr 混入宿主安全删除守卫的报错**：`safe-bin/rm: line 4: $'\r': command not found`、`set: pipefail: invalid option name` | 宿主把 `rm` / `rmdir` / `unlink` 以 **`BASH_FUNC_RM%%=() { "${CODEBUDDY_SAFE_DELETE_BIN_DIR}/rm" "$@" }`** 形式导出；Cygwin sh 启动会 import 这些函数覆盖 `rm`，R 启动脚本调用 `rm` 时命中 MSYS2 版 CRLF 脚本。**只剥 `BASH_ENV` 仍复现** | `stageEnv()` 一律剥掉 `BASH_FUNC_` 前缀变量；变量名用 `strings.ToUpper()` 归一化（Windows 的 `Path/PATH/path` 大小写不敏感，按字面剥会漏）。判据 `r/clean-host-env` 押 stderr 不含 `safe-bin|pipefail|command not found`；`check:node` 的 A 场景也从节点侧押一遍 |
+| ⑤ ★★ | R 每次启动都告警 `package 'stats' in options("defaultPackages") was not found`，`sd()` / `lm()` 不可用 | `stats.dll` 在，但 `cygcheck` 报缺 **`cyglapack-0.dll`** —— 是**本机 Cygwin R 安装不完整**，不是节点净化造成 | 设 `R_DEFAULT_PACKAGES=base` 能消掉告警，但 `requireNamespace("stats")` 仍 FALSE ⇒ **那是把缺陷藏起来，不做**。`probes.startupWarning` 如实登记；判据 `r/default-packages-truth` 押「自报 + 不可用时必须有告警」，换机器修好也不误红 |
+| ⑥ ★ | 硬编码 `flavor=cygwin`，换 Linux / 原生 Windows R 就撒谎 | 风味是运行时属性 | `--version` 的 `Platform:` 行走通用 `flavorRe` 解析；判据 `r/flavor` 让 R 自报 `R.version$os` 与节点回报核对，`r/version` 押 `getRversion()` 与动态探测版本一致 |
+| ⑦ | 宿主 `R_PROFILE` / `R_LIBS` / `.RData` 等状态可能漏进临时执行 | `--vanilla` 能挡一部分，但不能只靠它 | `--vanilla --slave --file=` 三件套 + `envStrip` 显式剥 `R_HOME / R_LIBS / R_LIBS_USER / R_PROFILE* / R_ENVIRON* / R_DEFAULT_PACKAGES`。**注意反向**：剥 `R_DEFAULT_PACKAGES` 正是为了不掩盖 ⑤ |
+| ⑧ ★ | `getcwd()` = `/cygdrive/c/...`、`R.version$os=cygwin`、分隔符 `/` | Cygwin POSIX 视图，与 MSYS2 是两套 | 判据 `r/cygwin-semantics` 按 `flavor` 分叉（`cygwin` 押 `/cygdrive/` 前缀，其它风味只押 `getwd()` 非空）；`perl/cygwin-semantics` 同构。**推断未实测**：Cygwin `fork()` 子进程在 Windows `Process.Kill()` 后可能残留，超时判据只押 `status=TO` |
+| ⑨ ★ | `serverSocket(0)` 能监听 | A′ 无内核级网络隔离，Cygwin 有完整 socket 栈 | `probes.network=no-enforcement;serverSocket-available`，**别对外说零外联**；CDP 抓包只覆盖浏览器 target，看不到节点进程（§3.4 已记） |
+| ⑩ ★ | 只 `os.Stat` 到入口就说「r 可用」 | 脚本入口能存在 ≠ 能启动，缺包装器时连 `--version` 都跑不了 | `wrapper/r-not-registered-without-sh` / `health-explains-missing-shell` / `execute-rejected` 三条反证：把入口拷到无 `sh.exe` 的目录必须**置灰 + 给原因 + 400**，不许谎报可用 |
+
+### 9.4 对后续工作的可复用结论
+
+1. **入口形态要当成一等配置**：`path` 指向的文件是 PE / ELF / shebang 脚本，决定了
+   `wrapEntry` 与 `envFromTool` 要不要挂。以后接 WSL 里的解释器、绿色版 JDK 的 `.cmd`
+   launcher、Python venv 的 `bin/foo` 包装脚本，先 `file` / 看首行，再写 spec。
+2. **「探测」与「执行」必须共用同一套启动计划**，包括包装器和环境变量。任何只在其中
+   一边生效的适配，都会产出「能力表说能用、点运行就 127」这种最难查的假绿。
+3. **宿主环境是隐藏的输入**：`BASH_FUNC_*` / `BASH_ENV` / MSYS2 PATH 不是「用户环境」，
+   而是会改变被测程序行为的注入源。对非原生运行时，默认应当**白名单重建环境**，
+   而不是「继承后剥几个黑名单」——本轮是从黑名单起步才踩到 ④。
+4. **能力缺口不许用开关盖掉**：`stats` 缺 DLL 是宿主事实，`R_DEFAULT_PACKAGES=base`
+   会让 stderr 变干净，但 `sd()` 仍不可用 ⇒ 判据必须押「解释器自报 + 缺口时告警」。
+   这条与「能力表不谎报」「不拿 0 冒充 memoryBytes」是同一条纪律。
+5. **通用钩子没有破坏三处防返工接缝**：`createRegistry(getMount, serverRunners)` 仍是
+   注入实例，`trusted` 仍由 Runner 的 `trust` 推导，后端专有语言名仍在
+   `PISTON_LANGUAGES` / `LOCAL_LANGUAGES`。换官方 Docker + Piston 时，这些脚本包装细节
+   全部留在 A′ 节点侧，前端一行不用改。
+6. **连续跑真机负例时，正向判据会被本机负载误伤 —— 别为此弱化判据**：v0.8 真机判据
+   从 119 涨到 138 条，九组真机负例串行跑约 14 分钟；第 2 / 3 组（拆 Lua / SQL 的 stdout
+   通道）各自多红了一条 `sample/go` 与 `go/multi-file`，FAIL 明细都是
+   `program.exe 阶段超过 3000ms 被终止`。**这不是判据漂移**：本机 CPU 负载下 Go run 阶段
+   的 3 秒墙钟偶发超时，与 Lua / SQL 被改坏的对象毫无关系；单独复跑两组都精确通过
+   （8 条 / 7 条），前后两次正式 dev / dist 自检也各是 138 条全绿。
+   ⇒ 遇到「红得比预期多一条」先看 FAIL 明细是不是 `TO` / `status=timeout`；
+   **不要**把 `EXPECTED_RED` 放宽成「允许偶发红」，也不要为了跑绿去抬高
+   `DEFAULT_LIMITS.wallMs` —— 前者掩盖抖动，后者把用户代码预算和宿主机开销混为一谈。
+   这与「超时判据只押 `status=TO`、不押毫秒数」是同一条口径的两面。

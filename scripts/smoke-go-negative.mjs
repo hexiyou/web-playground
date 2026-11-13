@@ -1,6 +1,6 @@
 /**
  * 服务端真机层拆线负例：把 main.ts 里注入的本地执行节点 Runner 摘掉。
- * v0.6 起 A′ 同时承载 Go 与 PHP，所以这一刀会让**两门服务端语言一起红**；
+ * v0.8 起 A′ 同时承载 Go / PHP / Perl / R，所以这一刀会让**四门服务端语言一起红**；
  * 期望 Go / PHP 全部判据 + 全局接线门控精确红，其余浏览器语言判据全绿、
  * 2 条记账跳过不动。想只拆一门请用 smoke:negative:php。
  *
@@ -69,6 +69,25 @@ const EXPECTED_RED = [
   'perl/version',
   'perl/wiring',
   'sample/perl',
+  'r/capability',
+  'r/clean-host-env',
+  'r/crlf',
+  'r/cygwin-semantics',
+  'r/default-packages-truth',
+  'r/flavor',
+  'r/multi-file',
+  'r/output-limit',
+  'r/path-escape',
+  'r/socket',
+  'r/stderr',
+  'r/stdin',
+  'r/stdout',
+  'r/syntax-error',
+  'r/timeout',
+  'r/utf8',
+  'r/version',
+  'r/wiring',
+  'sample/r',
 ].sort();
 
 const EXPECTED_SKIPS = ['css/infinite-loop', 'html/infinite-loop'].sort();

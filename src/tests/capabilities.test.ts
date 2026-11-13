@@ -34,16 +34,17 @@ function synthetic(): RunnerRegistry {
   reg.register(fakeRunner('go', 'server'));
   reg.register(fakeRunner('php', 'server'));
   reg.register(fakeRunner('perl', 'server'));
+  reg.register(fakeRunner('r', 'server'));
   return reg;
 }
 
 describe('能力表由接线层推导', () => {
-  it('接线真值：浏览器七门已接线；Go / PHP / Perl 未注入服务端 runner 时如实置灰', () => {
+  it('接线真值：浏览器七门已接线；Go / PHP / Perl / R 未注入服务端 runner 时如实置灰', () => {
     const reg = createRegistry(() => ({} as unknown as HTMLElement));
     const caps = deriveCapabilities(reg);
     expect(caps).toHaveLength(LANG_DEFS.length);
     for (const cap of caps) {
-      if (cap.lang === 'go' || cap.lang === 'php' || cap.lang === 'perl') {
+      if (cap.lang === 'go' || cap.lang === 'php' || cap.lang === 'perl' || cap.lang === 'r') {
         expect(cap.available, '纯服务端语言没注入 runner 就不能谎报可用').toBe(false);
         expect(cap.reason).toContain('未接线');
         continue;
