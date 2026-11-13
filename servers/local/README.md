@@ -5,6 +5,11 @@
 >
 > v0.6 变更：节点从「写死只跑 Go」改成**内建 runtimeSpec 表 + 每次真探测 + 可配置运行时路径**，
 > 并接入第二门服务端语言 **PHP**。加下一门语言不再改 `execute()` 分支。
+>
+> v0.7 变更：接入第十门语言 **Perl**（本机是 **Cygwin Perl 5.32**，不是原生 Windows Perl），
+> 第一次真正用「手动配置运行时路径」挂**不在 PATH、没写注册表**的便携式解释器；新增
+> `flavor` 字段由 `$^O` 动态探测，不硬编码宿主。**Cygwin 环境实测报告与完整坑清单见 §8** ——
+> 后续要接 MSYS2 / WSL / 其它 POSIX 风味运行时之前，务必先读那一节。
 
 ## 1. 这是什么 / 为什么与官方推荐分叉
 
@@ -76,11 +81,16 @@ npm run smoke                      # 自动拉起/复用/关闭节点，跑真�
 ```json
 {
   "runtimes": {
-    "go":  { "path": "", "disabled": false },
-    "php": { "path": "D:/portable/php-8.3/php.exe", "disabled": false }
+    "go":   { "path": "", "disabled": false },
+    "php":  { "path": "D:/portable/php-8.3/php.exe", "disabled": false },
+    "perl": { "path": "D:/cygwin64/bin/perl.exe", "disabled": false }
   }
 }
 ```
+
+`perl` 这条是 v0.7 的真实用例：Cygwin Perl **不在 PATH、没写注册表**，靠绝对路径挂进来。
+`check:node` 的 `fallback/perl-follows-path-truth` 会反证：把 `path` 清空后，PATH 里没有
+perl ⇒ 该语言从 `runtimes` 消失，**证明它全靠配置、不是碰巧被 LookPath 找到**。
 
 | 字段 | 含义 |
 |---|---|
@@ -100,7 +110,13 @@ npm run smoke                      # 自动拉起/复用/关闭节点，跑真�
   path 配了?       → os.Stat 必须是普通文件，否则跳过；source = "config"
   path 为空?       → exec.LookPath(execName)，找不到就跳过；source = "path"
   找到可执行文件  → 带 3s 超时跑 detectArgs，正则解析版本；失败就跳过
+                   → 若 spec 配了 flavorRe，从同一次输出再解析宿主风味（如 perl 的 $^O）
 ```
+
+`detectArgs / versionRe / flavorRe` 都由 spec 描述。**宿主风味不猜、不硬编码**：Perl 的
+探测命令一次输出 `$^V|$^O`（如 `v5.32.1|cygwin`），`runtimes[].flavor` 与
+`probes.runtimeFlavor` 都如实回报。同一条 spec 换挂 Strawberry Perl（`MSWin32`）、
+ActivePerl 或 Linux perl 时，只有 flavor 变，节点代码一行不用改。
 
 探测失败的语言**不出现在数组里**，前端 `RuntimeCache` 拿到版本表后，缺哪门就把哪门
 判为 `unavailable` 并给出「安装到 PATH 或配 `runtimes.local.json`」的指引；能力表由注册表
@@ -112,8 +128,9 @@ npm run smoke                      # 自动拉起/复用/关闭节点，跑真�
 ### 3.3 加一门语言的节点侧改动
 
 `builtinSpecs()` 里加一条 `runtimeSpec`：`language / aliases / execName / detectArgs /
-versionRe / extensions / entryName / envStrip / envSet / probeExtra / prepare / compile / run`。
-`compile` 为 `nil` 就是单阶段语言（PHP），非 nil 走编译 + 运行两阶段（Go）。
+versionRe / flavorRe / extensions / entryName / envStrip / envSet / probeExtra /
+prepare / compile / run`。`flavorRe` 可选，用来从探测输出里解析宿主风味（不硬编码）。
+`compile` 为 `nil` 就是单阶段语言（PHP / Perl），非 nil 走编译 + 运行两阶段（Go）。
 文件名白名单、环境净化、`go.mod` 生成、启动参数都由 spec 描述，`execute()` 里没有
 任何 `if language == ...` 分支。前端仍按固定五步（登记 → Runner 映射 → 注入 →
 CodeMirror → 判据负例），**UI 一行不改**。
@@ -125,10 +142,13 @@ CodeMirror → 判据负例），**UI 一行不改**。
 
 | 场景 | 押什么 |
 |---|---|
-| A 配了 `php.path` | `runtimes.php.source === "config"` · `health.config` 指向临时文件 · PHP execute 真吐出字节 · `probes.runtimePathSource === "config"` · Go 两阶段不回归 |
-| B path 指向不存在 | php 从 runtimes 消失 · `health.missing.php` 说明原因 · `POST execute php` 明确 400 `runtime is unknown` |
-| C `disabled: true` | PATH 里明明有 php，仍不登记（证明「关」优先于探测） |
-| D `path: ""` | 回退 PATH，`source === "path"`，execute 真跑通 |
+| A 配了 `php.path` / `perl.path` | `source === "config"` · `health.config` 指向临时文件且 `missing={}` · PHP/Perl execute 真吐出字节 · `perl.flavor === $^O` 且版本一致 · 中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF · Go 两阶段不回归 |
+| B path 指向不存在 | php 与 perl 都从 runtimes 消失 · `health.missing` 说明原因 · 两门 `POST execute` 都明确 400 `runtime is unknown` |
+| C `disabled: true` | PATH 里明明有 php、配置里明明有 perl，仍不登记（证明「关」优先于探测） |
+| D `path: ""` | php 回退 PATH `source="path"` 且 execute 真跑通；**perl 按 PATH 里到底有没有它如实判**（本机没有 ⇒ 不登记，反证 A 场景全靠配置路径） |
+
+v0.7 共 **26 条**。D 场景那条是「手动配置运行时路径」的价值证据：Cygwin Perl 不在 PATH，
+清空 `path` 后能力表必须立刻置灰，不许拿缓存里的旧路径假装还能跑。
 
 报告落在 `.node-check-report.json`（不入库）。**真机自检（浏览器 CDP）只证明前端资产零外联，
 证明不了节点进程的网络行为**，配置路径是否生效只能靠这一层判据。
@@ -142,17 +162,18 @@ CodeMirror → 判据负例），**UI 一行不改**。
 | `POST /api/v2/execute` | 请求/响应同 Piston v2 形状 |
 | `OPTIONS *` | CORS 预检，204 |
 
-`runtimes[].source` 是 A′ 扩展字段（`config` / `path`）；官方 Piston 没有，前端忽略即可。
+`runtimes[].source`（`config` / `path`）与 `runtimes[].flavor`（如 `cygwin`）都是 A′ 扩展字段，
+官方 Piston 没有；前端 `RuntimeCache` 只取 `language/version`，忽略其余字段即可。
 
 请求体接受的字段：`language / version / files[] / stdin / args / compile_timeout /
 run_timeout / compile_cpu_time / run_cpu_time / compile_memory_limit /
 run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Piston 由环境变量配置，
 不传则忽略）。`files[].name` 按 Piston 契约只接受**纯文件名**（无路径、无分隔符），
-扩展名按语言白名单：Go 只收 `.go`、PHP 只收 `.php`；`encoding` 只支持 `utf8`。
-第一个文件是主文件；`name` 为空时按语言补 `main.go` / `main.php`。
+扩展名按语言白名单：Go 只收 `.go`、PHP 只收 `.php`、Perl 只收 `.pl`；`encoding` 只支持 `utf8`。
+第一个文件是主文件；`name` 为空时按语言补 `main.go` / `main.php` / `main.pl`。
 
 响应体：`{language, version, run:{...}, compile?:{...}, probes:{...}}`。
-**单阶段语言（PHP）不带 `compile` 字段**，前端 `mapExecuteResponse()` 走编译缺省分支；
+**单阶段语言（PHP / Perl）不带 `compile` 字段**，前端 `mapExecuteResponse()` 走编译缺省分支；
 两阶段语言（Go）编译失败时 `compile.status = "RE"`，`run` 是空壳并带 `message`，
 由 `compile.status` 决定总体状态，**不谎报执行过**。
 
@@ -165,7 +186,8 @@ run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Pist
   只有墙钟、输出字节、并发上限是真闸（`probes.enforcedLimits` / `unsupportedLimits`）。
   `buildExecuteBody()` 仍然显式传这些字段，是为了将来切官方 Piston 时行为一致。
 - `probes` 按语言登记：`stages=build+run|run`、`network`（见下）、
-  `runtimePathSource=config|path`、`runtimeVersion`、`encoding=utf8-only`。
+  `runtimePathSource=config|path`、`runtimeVersion`、可选的 `runtimeFlavor`（`flavorRe`
+  配了才写）、Perl 的 `flavorFrom=$^O` / `includePath=-I.`、`encoding=utf8-only`。
 
 **各语言的零外联口径（别混）**：
 
@@ -173,6 +195,7 @@ run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Pist
 |---|---|---|
 | Go | `GOPROXY=off / GOTOOLCHAIN=local / GOSUMDB=off / GOWORK=off` 只管编译期拉包 | 用户代码里的 `net/http` 可直连 |
 | PHP | `-d allow_url_fopen=0 -d allow_url_include=0` 关 URL 包装器；`php.ini` 用宿主机默认 | `curl` / `sockets` / `stream_socket_client` 扩展仍可直连 |
+| Perl | **没有任何禁网措施**：只剥掉宿主的 `PERL5LIB` / `PERL5OPT` / `PERLLIB` / `PERL_LOCAL_LIB_ROOT` / `PERL_MM_OPT`，避免把本机模块带进执行环境 | `IO::Socket::INET` / `LWP` / `system()` / `fork()` 全可用；Cygwin 有完整 socket 栈，`probes.network=no-enforcement;IO::Socket-available` |
 
 ⇒ **A′ 没有网络隔离**，这是「只跑可信代码」的又一条理由。别把 `-d allow_url_fopen=0`
 当成沙箱。PHP 语法错误走 `display_errors=stderr` 进 stderr，进程退出码非零但
@@ -211,6 +234,10 @@ stderr + `exitCode`，不要押 `status=error`。
 9. **CDP 抓包不是节点进程的网络证据**：浏览器只监听自己的 target，节点进程发的
    请求它一条也看不到。「零外联」判据证明的是前端资产同源自托管；节点侧只能靠
    `probes.network` 自述 + `check:node` 的行为判据，二者都不能替代内核隔离。
+10. **★ Cygwin / 非原生 POSIX 运行时有一整组专属坑**（中文 argv 假象、UTF-8 编码层陷阱、
+    `/cygdrive/` 路径语义、DLL 依赖靠 exe 同目录、`.` 不在 `@INC`、进程树 kill…）。
+    v0.7 全部实测并把关键几条做成可执行判据，完整清单见 **§8**。接下一门非原生运行时
+    （MSYS2 / WSL / 便携式 Ruby / 绿色版 JDK）之前先读那一节，别重新踩一遍。
 
 ## 6. 回切官方 Docker / Piston 的清单
 
@@ -243,3 +270,79 @@ stderr + `exitCode`，不要押 `status=error`。
 CRAN 里有 AGPL-3 包（对外服务会触发 §13）、OpenJDK 是 `GPLv2+CPE`、Oracle JDK 用
 NFTC（免费窗口带日历）、PHP 8.5 及更早是 `PHP License 3.01`（有名称与署名条款，
 新版已改 BSD-3-Clause）。**装包前先确认发行版与版本**，别把预编译 tar 直接对外分发。
+Perl 是 Artistic / GPL 双许可，**Cygwin 运行时另有自己的许可条款**：本次只在本机自用、
+不随项目分发，所以未逐条核验；若以后要把 Cygwin 运行时随节点打包发布，须单独做法务评估。
+
+## 8. Cygwin Perl 实测报告与坑清单（v0.7 · 后续接非原生运行时前必读）
+
+> 这一节是**实测记录**，不是设计推演。何工刻意选 Cygwin Perl（而非 ActivePerl /
+> Strawberry Perl），目的就是验证「本项目调用 Cygwin 环境的运行时是否符合预期」。
+> 结论：**跑通了，没有阻断性问题**；但踩到一组「非原生 Windows 运行时」特有的坑，
+> 其中有几条如果不记下来，下次接 MSYS2 / WSL / 便携式 Ruby 会以另一种样子再出现。
+
+### 8.1 环境与接法
+
+| 项 | 值 |
+|---|---|
+| 解释器 | `D:/cygwin64/bin/perl.exe`（12,800 B stub），`cygperl5_32.dll` + `cygwin1.dll` 同目录 |
+| 版本 / 风味 | `5.32.1` / `$^O = cygwin`（`perl -e 'printf "%s|%s\n", $^V, $^O;'`） |
+| 是否 Windows 原生 | 否。Cygwin POSIX 运行时，**与本机 Git Bash 的 MSYS2 是两套** |
+| 是否在 PATH | **否**（宿主 `PATH` 里没有 `cygwin64`，`$ENV{PATH}` 探测为 0） |
+| 怎么挂进来 | `runtimes.local.json` 的 `perl.path` 绝对路径 ⇒ `source=config` |
+| 节点侧改动 | `builtinSpecs()` 加一条 perl spec，**`execute()` 一个语言分支都没加** |
+
+### 8.2 实测 15 项（手工 HTTP + 真机判据，全部通过）
+
+| # | 场景 | 结果 |
+|---|---|---|
+| 1 | `GET /api/v2/runtimes` | `perl / 5.32.1 / source=config / flavor=cygwin`，`health.missing={}` |
+| 2 | 纯 ASCII stdout | `PERL-ASCII-OK`，`code=0` |
+| 3 | 中文（源码写进 `.pl` 文件） | UTF-8 字节原样回显 |
+| 4 | 中文 `use utf8 + :encoding(UTF-8)` | 正确 |
+| 5 | 中文 `binmode ':utf8'` **无** `use utf8` | **乱码**（见坑 ②） |
+| 6 | stdin 注入 | `marker-42` 读回 |
+| 7 | stderr + `exit 2` | 分离且退出码正确 |
+| 8 | 多文件 `require 'helper.pl'` | 通过（依赖 `-I.`，见坑 ⑤） |
+| 9 | `$^O` / `getcwd()` / `File::Spec` | `cygwin` / `/cygdrive/c/...` / `a/b` |
+| 10 | CRLF | `A\nB\n` 保持 LF，**未**被转成 CRLF |
+| 11 | backtick `` `echo ...` `` | 成功（宿主 PATH 无 cygwin，见坑 ④） |
+| 12 | 相对路径写文件 | `-s 'written.txt' = 1`，落在节点每次新建的临时目录 |
+| 13 | `IO::Socket::INET` 建 UDP socket | `SOCKET-OK`（如实登记无网络隔离，见坑 ⑨） |
+| 14 | 墙钟超时 `sleep(30)` / 700ms | `status=TO`，只押状态不押毫秒 |
+| 15 | 输出限额 / `../evil.pl` 路径逃逸 | `status=OL` 截断 / HTTP 400 拒绝 |
+
+Windows 风格路径参数也单独验过：`C:\...\main.pl`、`C:/.../main.pl`、MSYS 映射
+`/tmp/.../main.pl` **三种写法 Cygwin 都认**（Cygwin 运行时自动做路径转换），
+所以节点传 `cmd.Dir` 的 Windows 路径 + 相对 `main.pl` 不需要额外适配。
+
+### 8.3 坑清单（★ = 已做成可执行判据）
+
+| # | 现象 | 根因 | 规避 / 判据 |
+|---|---|---|---|
+| ① ★ | **Git Bash 里 `perl -e 'print "中文";'` 静默无输出**：`exit=0`、stdout/stderr 都 0 字节，极易误判成「Cygwin 不支持中文」 | MSYS2（Git Bash）把中文 argv 按 cp936 转给非 MSYS 程序，Cygwin perl 收到的 `-e` 脚本被吃掉 | **测非原生运行时一律用「写文件 + HTTP JSON body」，不要用 shell 传中文 argv**。项目里代码走 `files[].content`，根本不经过 argv，所以中文正常；§8.2 #3 是正解 |
+| ② ★ | `binmode(STDOUT, ':utf8')` 但没 `use utf8` ⇒ `ä¸\xadæ\x96\x87...` | 源码 UTF-8 字节被当 Latin-1 字符，`:utf8` 层再编码一次 | 正确写法 `use utf8; binmode(STDOUT, ':encoding(UTF-8)');`。判据 `perl/utf8-layer-trap` 押「两种写法结果不同」，不押具体乱码字节 |
+| ③ ★ | `getcwd()` 是 `/cygdrive/c/...`、`File::Spec` 用 `/`、`$^O=cygwin` | Cygwin 把 Windows 路径映射成 POSIX 视图 | 代码里别硬编码 `\` 与 `C:` 做 `open`；**`/tmp` 是 Cygwin 的 `/tmp`，不是 Git Bash 的、也不是 Go `os.MkdirTemp` 那个目录**。判据 `perl/cygwin-semantics` 按 `flavor` 分叉，换原生 Perl 不误红 |
+| ④ ★ | 宿主 `PATH` 里没有 `cygwin64`，但 `` `echo` `` / `system()` 照样能起 `/bin/sh` | Cygwin 运行时初始化时自补 `/usr/bin`；且 `cygwin1.dll` / `cygperl5_32.dll` 靠 **exe 同目录**被找到（Windows DLL 搜索顺序），不靠 PATH | 节点**不需要**为便携式 Perl 注入 PATH；但这是隐式环境，能跑哪些外部命令取决于 Cygwin 装了什么。⚠️ **推断未实测**：把 `perl.exe` 单独拷到别处、不带同目录两个 dll 必然起不来 ⇒ 配 `path` 时别只拷 exe |
+| ⑤ ★ | 附加 `helper.pl` 后 `require 'helper.pl'` 失败（若不处理） | Perl 5.26+ 把 `.` 从 `@INC` 移除（安全改进） | spec 的 `run` 加 `-I .`，与 Go/PHP「附加文件同目录」语义对齐；`probes.includePath=-I.` 如实登记。判据 `perl/multi-file` |
+| ⑥ | `\n` 没变 CRLF、stdin 注入也正常 | 当前 Cygwin `/cygdrive` 是 binary 挂载 | 判据 `perl/crlf` 验证。**风险提示**：这是当前挂载设置的事实，换机器或挂载成 text 模式可能变；`probes.encoding=utf8-only` 只承诺字节口径，不承诺换行 |
+| ⑦ | `flavor` 若写死 `cygwin`，换 Strawberry / Linux perl 就撒谎 | 宿主风味是运行时属性，不是语言属性 | `detectArgs` 一次输出 `$^V\|$^O`，`flavorRe` 解析 ⇒ `runtimes[].flavor` + `probes.runtimeFlavor` 如实回报。判据 `perl/flavor` 让解释器再自报一次核对，**不押死具体值** |
+| ⑧ | **推断未实测**：`fork()` / `system()` 子进程可能残留 | Windows `Process.Kill()` 只杀主进程；Cygwin 的 fork 是模拟实现 | `probes.processTreeKill=not-guaranteed-on-windows` 已声明；超时判据用 `sleep(30)` 且只押 `status=TO`，不押毫秒。真要长期跑不可信代码 ⇒ 回切官方 Docker + isolate |
+| ⑨ ★ | socket 能建、`LWP` / `system()` 也能用 | A′ 本来就没有内核级网络隔离；Cygwin 有完整 socket 栈 | `probes.network=no-enforcement;IO::Socket-available`，**别对外宣称「零外联」**。CDP 抓包只覆盖浏览器 target，看不到节点进程 |
+| ⑩ | **风险提示未实测**：本机同时有 MSYS2 与 Cygwin，两套 POSIX 运行时的 `/usr/bin`、`/tmp`、`fork` 语义不同 | 两套 `cygwin1.dll` 变体不能混用 | 本项目刻意用**绝对路径 + HTTP** 解耦，不在 shell 里把 MSYS 路径 / 管道链式喂给 Cygwin 程序；接 WSL / MSYS2 运行时时同样不要链式调用 |
+
+### 8.4 对后续工作的可复用结论
+
+1. **「手动配置运行时路径」不是可选项，是这类运行时的唯一接法**：`check:node` 的
+   `fallback/perl-follows-path-truth` 反证了清空 `path` 后 perl 立刻从能力表消失。
+   以后接便携式 Ruby / 绿色 JDK / WSL 里的解释器，都按同一套 `path` → `source=config`
+   → `GET/POST 双探测` 走，`execute()` 不需要动。
+2. **宿主风味要用探测值，不要写死**：`flavorRe` 是通用机制（`$^O` / `R.version.string` /
+   `RUBY_PLATFORM` / `java -version` 都能套）。判据一律「让解释器自报一次，与节点回报核对」，
+   这样换机器、换发行版都不误红。
+3. **判据要押可观察副作用，不要押「我觉得应该没问题」**：§8.3 里带 ★ 的六条全部落在
+   `selftest.ts` / `check-node.mjs`，拆线负例会证明它们真的连着接线层。
+4. **测非原生运行时的三条纪律**：中文走文件不走 argv；路径用绝对路径且带齐 dll；
+   每次都验 stdin / stdout / stderr / 退出码 / 编码层 / cwd / 换行 / 子进程 / socket 九项。
+5. **越「完整」的运行时越要收紧对外的说法**：Cygwin Perl 能力比 WASM 版 Python 完整得多，
+   但 A′ 没有笼子 ⇒ 仍是 `process-only` / `advisory`、结果不可判分。
+   语言能力变强 ≠ 隔离档变高，这两件事不要混。

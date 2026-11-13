@@ -94,6 +94,19 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
       'php.ini 用宿主机默认；allow_url_fopen=0 关闭 URL 包装器',
     ],
   },
+  {
+    lang: 'perl',
+    label: 'Perl',
+    extensions: ['pl'],
+    browserSandbox: 'worker',
+    switchable: [],
+    nativeApis: [
+      '（仅服务端执行）',
+      '本机 Perl 5 · 单阶段解释执行，宿主风味由 $^O 动态探测',
+      '可挂 Cygwin / Strawberry / ActivePerl；节点按语言配绝对路径',
+      '中文须 use utf8 + binmode(STDOUT, ":encoding(UTF-8)")',
+    ],
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

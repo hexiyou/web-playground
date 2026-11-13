@@ -62,6 +62,7 @@
   <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span><br>
   <span class="small">2026-11-12 再补：<b>第十三章</b>记录一次<b>刻意与官方推荐分叉</b>的决策 —— 服务端改用非 Docker 的 A′ 本机进程节点（Go 优先），含威胁模型、回切条件、三处防返工接缝与官方部署真值，<b>时间久了别忘为什么</b>。</span><br>
   <span class="small">2026-11-13 补 <b>13.8</b>：A′ 从「写死只跑 Go」泛化成<b>内建规格表 + 每次真探测 + 可配置运行时路径</b>，并接入第二门服务端语言 <b>PHP</b>；记下「宿主机前置不会消失」与新踩的三个坑。</span>
+  <span class="small">2026-11-13 补 <b>13.9</b>：刻意选 <b>Cygwin Perl</b>（非 Windows 原生、不在 PATH）验证「本项目调用非原生 POSIX 运行时是否符合预期」—— 跑通无阻断，但记下中文 argv 假象、UTF-8 编码层、<code>/cygdrive/</code> 路径、DLL 依赖、<code>@INC</code> 等一整组坑；完整 10 条实测清单在节点手册 §8，<b>后续接 Ruby / R / Java / WSL 之前先读</b>。</span>
 </div>
 
 <div class="toc">
@@ -613,7 +614,25 @@ interface Capability {
 <p class="small">v0.6 基线：单测 <b>77</b> · 真机 dev/dist 双层各 <b>100 条（98 绿 / 2 条记账跳过）</b> · 节点判据 <b>14</b> · 拆线负例 <b>13 组</b>（新增单测层 <code>negative:php</code> 精确红 3、真机层 <code>smoke:negative:php</code> 精确红 15；<code>smoke:negative:go</code> 因服务端现有两门语言扩到 27 条红）。数字以最终验收输出为准。</p>
 <p class="small">节点自身的完整真值（配置格式、接口字段、probes 清单、起停参数、已知坑、回切清单）在 <code>servers/local/README.md</code>，本手册只记决策与口径。</p>
 
-<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）· 2026-11-13 补 13.8（v0.6 规格表 / 动态探测 / 路径配置）</div>
+<h3>13.9 v0.7：用 Cygwin Perl 提前验证「非原生 Windows 运行时」这条接缝</h3>
+<p>何工这一门<b>刻意不选</b> ActivePerl / Strawberry Perl，而指定 <b>Cygwin Perl</b>（<code>D:\cygwin64\bin\perl.exe</code>，5.32.1，<b>不在 PATH、没写注册表</b>）。目的不是加语言本身，而是把「本项目调用 Cygwin / MSYS2 / WSL 这类非原生 POSIX 运行时是否符合预期」提前试出来 —— 用他的话说「即便出问题也在预期之中，坑要记下来」。结论：<b>跑通，没有阻断性问题</b>，但确认了一组与 WASM 时代完全不同的坑类型。</p>
+<ul>
+<li><b>手动配置路径从「可选功能」升级成「唯一接法」</b>：v0.6 加 <code>path</code> 覆盖时，PHP 其实仍在 PATH 里，算不上真用例。这次 <code>check:node</code> 的 <code>fallback/perl-follows-path-truth</code> 给出反证：清空 <code>path</code> 后 PATH 里没有 perl ⇒ 该语言立刻从 <code>runtimes</code> 消失、能力表置灰，<b>证明它完全靠配置</b>，不是碰巧被 <code>LookPath</code> 找到。</li>
+<li><b>宿主风味必须探测，不能硬编码</b>：<code>detectArgs</code> 一次输出 <code>$^V|$^O</code>（<code>v5.32.1|cygwin</code>），<code>flavorRe</code> 解析后写进 <code>runtimes[].flavor</code> 与 <code>probes.runtimeFlavor</code>。判据 <code>perl/flavor</code> 让解释器再自报一次与节点回报核对，<b>不押死 <code>cygwin</code></b>；同一条 spec 换挂 Strawberry（<code>MSWin32</code>）或 Linux perl，代码一行不改。</li>
+<li><b>「阉割」换了类型但没消失，还多了一层 POSIX 视图差异</b>：WASM 阉割语言能力（第三方包 / 网络），A′ 阉割运行环境（无内核隔离、临时目录每次销毁），Cygwin 再叠加 <code>/cygdrive/</code> 路径、<code>/</code> 分隔符、<code>$^O=cygwin</code>、DLL 靠 exe 同目录、<code>.</code> 不在 <code>@INC</code>。Windows 三种路径写法作为 argv 参数它都认，但代码里硬编码 <code>C:\</code> 做 <code>open</code> 仍会踩坑。</li>
+<li><b>语言能力变强 ≠ 隔离档变高</b>：Cygwin Perl 有完整 socket / <code>system()</code> / <code>fork()</code>，比 Pyodide 强得多，但 A′ 没有笼子 ⇒ 仍是 <code>process-only</code> / <code>advisory</code>、结果不可判分；<code>probes.network=no-enforcement;IO::Socket-available</code> 如实登记，别对外说「零外联」。</li>
+</ul>
+<p><b>四条最贵的坑</b>（完整 10 条、15 项实测表与可复用检查清单在 <code>servers/local/README.md</code> §8）：</p>
+<ol>
+<li>★★ <b>中文 argv 假象</b>：Git Bash（MSYS2）把中文命令行参数按 cp936 传给 Cygwin 程序，<code>perl -e 'print "中文"'</code> 会 <code>exit=0</code> 且 stdout/stderr 全空，极易误判「Cygwin 不支持中文」。项目里代码走 <code>files[].content</code> 写 UTF-8 文件、不经 argv，完全正常 ⇒ <b>测非原生运行时一律走文件 + HTTP body，别用 shell 传中文 argv</b>。</li>
+<li>★★ <b>UTF-8 编码层陷阱</b>：只写 <code>binmode(STDOUT, ':utf8')</code> 而不 <code>use utf8</code>，UTF-8 字节被当 Latin-1 升级 ⇒ 乱码。正确是 <code>use utf8; binmode(..., ':encoding(UTF-8)')</code>。判据 <code>perl/utf8-layer-trap</code> 把这条钉死。</li>
+<li>★ <b>宿主 PATH 没有 cygwin64，backtick 却照样能起 <code>/bin/sh</code></b>：Cygwin 运行时初始化自补 <code>/usr/bin</code>，<code>cygwin1.dll</code> / <code>cygperl5_32.dll</code> 靠 exe 同目录被找到（Windows DLL 搜索顺序）。节点<b>不需要</b>注入 PATH，但这是隐式环境，别当成「节点提供了完整 POSIX」；只拷 <code>perl.exe</code> 不带 dll 必然起不来。</li>
+<li>★ <b>Perl 5.26+ 把 <code>.</code> 移出 <code>@INC</code></b>：多文件 <code>require 'helper.pl'</code> 会挂，spec 加 <code>-I .</code> 才与 Go/PHP 语义一致；<code>probes.includePath=-I.</code> 如实登记。</li>
+</ol>
+<p><b>对后续接 Ruby / R / Java / WSL 运行时的口径</b>：① 路径用配置、能力表照这一刻探测；② 风味与版本由解释器自报，判据不押死具体值；③ 九项必验（stdin / stdout / stderr / 退出码 / 编码层 / cwd / 换行 / 子进程 / socket）；④ 越完整的运行时越不能对外宣称沙箱。分叉依据仍是 13.2 / 13.4 的威胁模型。</p>
+<p class="small">v0.7 基线：单测 <b>85</b> · 真机 dev/dist 双层各 <b>119 条（117 绿 / 2 条记账跳过）</b> · 节点判据 <b>26</b> · 拆线负例 <b>15 组</b>（新增单测层 <code>negative:perl</code> 红 3、真机层 <code>smoke:negative:perl</code> 红 20；<code>smoke:negative:go</code> 因服务端现有三门语言扩到 46 条红）· 首屏 <b>18.50 KiB</b>、Perl 语法 chunk <b>3.34 KiB</b>。数字以最终验收输出为准。</p>
+
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）· 2026-11-13 补 13.8（v0.6 规格表 / 动态探测 / 路径配置）与 13.9（v0.7 Cygwin Perl 实测分叉）</div>
 </div>
 </body>
 </html>

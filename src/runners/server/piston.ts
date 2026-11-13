@@ -38,6 +38,7 @@ export const PISTON_LANGUAGES: ServerLanguageMap = Object.freeze({
   python: 'python',
   go: 'go',
   php: 'php',
+  perl: 'perl',
 });
 
 export interface PistonConfig {
@@ -77,7 +78,7 @@ export function createPistonRunner(cfg: PistonConfig): Runner {
   return {
     id: 'piston.v2',
     target: 'server',
-    languages: ['javascript', 'typescript', 'html', 'css', 'lua', 'sql', 'python', 'go', 'php'],
+    languages: ['javascript', 'typescript', 'html', 'css', 'lua', 'sql', 'python', 'go', 'php', 'perl'],
     enabled: cfg.enabled ?? false,
     // isolate = Linux namespaces + chroot + uid + cgroup，结果可用于判分。
     isolation: 'kernel',

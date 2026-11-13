@@ -104,6 +104,8 @@ type runtimeEntry struct {
 	Aliases  []string `json:"aliases"`
 	/** A′ 扩展：config = 配置里指定了 path；path = 从 PATH 找到。便于核对便携式配置是否生效。 */
 	Source string `json:"source,omitempty"`
+	/** A′ 扩展：运行时自报的 OS 风味（perl 的 $^O = cygwin / MSWin32 / linux），空 = 该语言不探测。 */
+	Flavor string `json:"flavor,omitempty"`
 }
 
 type requestFile struct {
@@ -163,6 +165,8 @@ type runtimeSpec struct {
 	execName   string   // PATH 回退时找的名字
 	detectArgs []string // 版本探测命令
 	versionRe  *regexp.Regexp
+	/** 可选：从同一次探测输出里解析「宿主风味」（如 perl 的 $^O=cygwin），如实登记不猜。 */
+	flavorRe   *regexp.Regexp
 	extensions []string // 允许的文件扩展名
 	entryName  string   // files[0].name 为空时的默认主文件名
 	envStrip   []string // 从宿主环境里剥掉的同名变量
@@ -235,20 +239,47 @@ func builtinSpecs() []*runtimeSpec {
 				"network": "allow_url_fopen=0,allow_url_include=0;curl/sockets-not-enforced",
 				"phpIni":  "host-default",
 			},
-			run: func(dir, exeName, entry, tool string, args []string) execPlan {
-				argv := []string{
-					"-d", "allow_url_fopen=0",
-					"-d", "allow_url_include=0",
-					"-d", "display_errors=stderr",
-					"-d", "html_errors=0",
-					"-d", "log_errors=0",
-					entry,
-				}
-				argv = append(argv, args...)
-				return execPlan{name: tool, argv: argv, tag: "run"}
-			},
+		run: func(dir, exeName, entry, tool string, args []string) execPlan {
+			argv := []string{
+				"-d", "allow_url_fopen=0",
+				"-d", "allow_url_include=0",
+				"-d", "display_errors=stderr",
+				"-d", "html_errors=0",
+				"-d", "log_errors=0",
+				entry,
+			}
+			argv = append(argv, args...)
+			return execPlan{name: tool, argv: argv, tag: "run"}
 		},
-	}
+	},
+	{
+		language: "perl",
+		aliases:  []string{"perl5"},
+		execName: "perl",
+		// 一次探测同时拿版本与宿主风味：$^V=v5.32.1，$^O=cygwin / MSWin32 / linux。
+		// 不硬编码「这是 Cygwin」——同一条 spec 也能挂 Strawberry / ActivePerl / Linux perl。
+		detectArgs: []string{"-e", `printf "%s|%s\n", $^V, $^O;`},
+		versionRe:  regexp.MustCompile(`v?([0-9]+\.[0-9]+\.[0-9]+)`),
+		flavorRe:   regexp.MustCompile(`\|([A-Za-z0-9_]+)`),
+		extensions: []string{".pl"},
+		entryName:  "main.pl",
+		// 剥掉宿主的模块搜索路径，避免把机器上装的第三方模块悄悄带进执行环境。
+		envStrip: []string{"PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MM_OPT"},
+		probeExtra: map[string]string{
+			"stages":      "run",
+			"network":     "no-enforcement;IO::Socket-available",
+			"flavorFrom":  "$^O",
+			"includePath": "-I.",
+		},
+		run: func(dir, exeName, entry, tool string, args []string) execPlan {
+			// Perl 5.26+ 把 . 从 @INC 移除了；不显式 -I. 的话 require 'helper.pl' 会失败。
+			// 本地可信代码片段，加回当前目录是为了与 Go/PHP 的「附加文件同目录」语义一致。
+			argv := []string{"-I", ".", entry}
+			argv = append(argv, args...)
+			return execPlan{name: tool, argv: argv, tag: "run"}
+		},
+	},
+}
 }
 
 // ---------------------------------------------------------------- 节点
@@ -259,6 +290,8 @@ type resolvedRuntime struct {
 	aliases  []string
 	source   string
 	tool     string
+	/** 运行时自报的宿主风味；空字符串表示该语言没有配置 flavorRe。 */
+	flavor string
 }
 
 type node struct {
@@ -308,12 +341,19 @@ func (n *node) resolveRuntime(spec *runtimeSpec) (*resolvedRuntime, error) {
 	if m == nil {
 		return nil, fmt.Errorf("无法解析 %s 版本输出：%q", spec.language, strings.TrimSpace(string(out)))
 	}
+	flavor := ""
+	if spec.flavorRe != nil {
+		if f := spec.flavorRe.FindSubmatch(out); f != nil {
+			flavor = string(f[1])
+		}
+	}
 	return &resolvedRuntime{
 		language: spec.language,
 		version:  string(m[1]),
 		aliases:  spec.aliases,
 		source:   source,
 		tool:     tool,
+		flavor:   flavor,
 	}, nil
 }
 
@@ -328,7 +368,8 @@ func (n *node) detectAll() ([]runtimeEntry, map[string]string) {
 			continue
 		}
 		entries = append(entries, runtimeEntry{
-			Language: rt.language, Version: rt.version, Aliases: rt.aliases, Source: rt.source,
+			Language: rt.language, Version: rt.version, Aliases: rt.aliases,
+			Source: rt.source, Flavor: rt.flavor,
 		})
 	}
 	return entries, missing
@@ -588,6 +629,9 @@ func (n *node) execute(req executeRequest) (int, any) {
 	probes := commonProbes()
 	probes["runtimePathSource"] = rt.source
 	probes["runtimeVersion"] = rt.version
+	if rt.flavor != "" {
+		probes["runtimeFlavor"] = rt.flavor
+	}
 	for k, v := range spec.probeExtra {
 		probes[k] = v
 	}

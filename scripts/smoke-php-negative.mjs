@@ -15,8 +15,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const reportFile = join(root, '.smoke-php-report.json');
 
-const NEEDLE = "    languages: ['go', 'php'],";
-const BROKEN = "    languages: ['go'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl'],";
+const BROKEN = "    languages: ['go', 'perl'],";
 
 const EXPECTED_RED = [
   'global/wiring',

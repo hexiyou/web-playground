@@ -59,7 +59,10 @@ describe('A′ 本地执行节点 Runner 元数据', () => {
     expect(r.id).toBe('local.process.v1');
     expect(r.target).toBe('server');
     expect(r.enabled).toBe(true);
-    expect(r.languages).toEqual(['go', 'php']);
+    // 押「包含」而不是精确数组：再加一门服务端语言时这条判据不该跟着红。
+    expect(r.languages).toContain('go');
+    expect(r.languages).toContain('php');
+    expect(r.languages).toContain('perl');
     expect(r.isolation).toBe('process-only');
     expect(r.trust).toBe('advisory');
   });

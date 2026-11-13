@@ -46,6 +46,7 @@ const FILE_NAMES: Record<LangId, string> = {
   python: 'main.py',
   go: 'main.go',
   php: 'main.php',
+  perl: 'main.pl',
 };
 
 function fileName(lang: LangId): string {
@@ -610,6 +611,131 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
       hasStderr(r) && /wrapper|allow_url_fopen|failed to open stream/i.test(text(r)) &&
         text(r).includes('bool(false)'),
       `status=${r.status} out=${text(r).slice(0, 180)}`);
+  }
+
+  // ---------- Perl（A′ 本机进程执行节点 · 本机挂 Cygwin Perl · 仅 server） ----------
+  // 这一组除了常规接线判据，还把 v0.7 实测到的四条 Cygwin / Perl 坑做成可执行证据：
+  // UTF-8 编码层陷阱、$^O/cwd/路径分隔符、CRLF、宿主 PATH 无 cygwin 仍能起 shell。
+  // ★ 宿主风味不硬编码：runtimeFlavor 由节点探测 $^O 得到，判据让解释器再自报一次核对，
+  //   换 Strawberry / ActivePerl / Linux perl 时这组判据不会误红。
+  {
+    const perlCap = capabilityFor(caps, 'perl');
+    pass('perl/wiring', 'perl', 'Perl 只有 server 位置且不可判分',
+      perlCap.available && perlCap.targets.length === 1 && perlCap.targets[0] === 'server' &&
+        perlCap.prefer === 'server' && !perlCap.trusted && perlCap.trust === 'advisory' &&
+        perlCap.isolation.includes('process-only'),
+      `targets=${perlCap.targets.join('/')} trust=${perlCap.trust} isolation=${perlCap.isolation.join('/')}`);
+
+    let r = await run('perl', 'print "PERL-STDOUT-MARK\\n";');
+    pass('perl/stdout', 'perl', '本机 Perl stdout 回显',
+      r.status === 'ok' && text(r).includes('PERL-STDOUT-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+    pass('perl/capability', 'perl', '单阶段 / 路径来源 / 宿主风味 / 无内存谎报 / 无网络隔离如实登记',
+      r.target === 'server' && r.engine === 'local.process.v1' &&
+        r.probes?.stages === 'run' &&
+        (r.probes?.runtimePathSource === 'config' || r.probes?.runtimePathSource === 'path') &&
+        typeof r.probes?.runtimeVersion === 'string' && r.probes.runtimeVersion.length > 0 &&
+        typeof r.probes?.runtimeFlavor === 'string' && r.probes.runtimeFlavor.length > 0 &&
+        r.probes?.includePath === '-I.' &&
+        /no-enforcement/.test(r.probes?.network ?? '') &&
+        r.probes?.memoryCapability === 'no-memory-cap' && r.usage?.memoryBytes === undefined,
+      `probes=${JSON.stringify(r.probes ?? {}).slice(0, 240)}`);
+
+    r = await run('perl', 'print "$^O\\n";');
+    pass('perl/flavor', 'perl', 'runtimeFlavor 与解释器自报 $^O 一致（不硬编码宿主）',
+      r.status === 'ok' && text(r).trim() === r.probes?.runtimeFlavor && text(r).trim().length > 0,
+      `flavor=${r.probes?.runtimeFlavor ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('perl', 'printf "%s\\n", $^V;');
+    pass('perl/version', 'perl', 'runtimes 动态探测的版本与 $^V 自报一致',
+      r.status === 'ok' && text(r).includes(String(r.probes?.runtimeVersion ?? '不可能匹配')),
+      `reported=${r.probes?.runtimeVersion ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('perl', 'my $x=<STDIN>; chomp $x; print "STDIN: $x\\n";', { stdin: 'marker-42' });
+    pass('perl/stdin', 'perl', 'stdin 注入并读回',
+      r.status === 'ok' && text(r).includes('STDIN: marker-42'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('perl', 'print STDERR "PERL-STDERR-MARK\\n"; exit 2;');
+    pass('perl/stderr', 'perl', 'stderr 与真实退出码',
+      hasStderr(r) && text(r).includes('PERL-STDERR-MARK') && r.exitCode === 2,
+      `status=${r.status} exitCode=${r.exitCode} stderr=${text(r).slice(0, 100)}`);
+
+    // 中文正确写法：use utf8 让源码字面量成为字符，:encoding(UTF-8) 负责输出编码。
+    const goodUtf8 = 'use utf8; binmode(STDOUT, ":encoding(UTF-8)"); print "中文标记：昆明\\n";';
+    r = await run('perl', goodUtf8);
+    pass('perl/utf8', 'perl', '中文 UTF-8 往返（use utf8 + :encoding(UTF-8)）',
+      r.status === 'ok' && text(r).includes('中文标记：昆明'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    // ★ 坑的可执行证据：只写 binmode ':utf8' 而没有 use utf8，Perl 把 UTF-8 字节串
+    //   当 Latin-1 字符再编码一次 ⇒ 中文变 mojibake。押「两种写法结果不同」，
+    //   不押具体乱码字节（跨版本稳定）。
+    const trap = await run('perl', 'binmode(STDOUT, ":utf8"); print "中文标记：昆明\\n";');
+    pass('perl/utf8-layer-trap', 'perl', 'binmode(:utf8) 缺 use utf8 会乱码（坑已复现并钉死）',
+      text(r).includes('中文标记：昆明') && !text(trap).includes('中文标记：昆明'),
+      `good=${text(r).trim().slice(0, 40)} trap=${text(trap).trim().slice(0, 60)}`);
+
+    const mainSrc = "require 'helper.pl'; print 'HELPER: ', label(), \"\\n\";";
+    r = await run('perl', mainSrc, {
+      files: [
+        { name: 'main.pl', content: mainSrc },
+        { name: 'helper.pl', content: 'sub label { "HELPER-MARK" } 1;' },
+      ],
+    });
+    pass('perl/multi-file', 'perl', '附加 .pl 文件同目录可 require（节点 -I. 生效）',
+      r.status === 'ok' && text(r).includes('HELPER: HELPER-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    // Cygwin 专属语义按 flavor 分叉：本机挂 Cygwin 时押 /cygdrive/ 与 / 分隔符；
+    // 换原生 Windows Perl 时只押「$O 与 flavor 一致 + cwd 非空」，不误红。
+    r = await run('perl', 'use Cwd; use File::Spec; print "OS=$^O\\nCWD=", getcwd(), "\\nSEP=", File::Spec->catfile("a", "b"), "\\n";');
+    const out = text(r);
+    const flavor = String(r.probes?.runtimeFlavor ?? '');
+    const cygwinOk = /OS=cygwin/.test(out) && /CWD=\/cygdrive\//.test(out) && /SEP=a\/b/.test(out);
+    const genericOk = out.includes('OS=' + flavor) && /CWD=./.test(out);
+    pass('perl/cygwin-semantics', 'perl', '宿主风味对应的路径语义（$O / cwd / 分隔符）',
+      r.status === 'ok' && (flavor === 'cygwin' ? cygwinOk : genericOk),
+      `flavor=${flavor} out=${out.replace(/\n/g, ' | ').slice(0, 160)}`);
+
+    r = await run('perl', 'print "A\\nB\\n";');
+    pass('perl/crlf', 'perl', '输出保持 LF，Cygwin 未把 \\n 转成 CRLF',
+      r.status === 'ok' && text(r).includes('A\nB') && !text(r).includes('\r'),
+      `status=${r.status} out=${JSON.stringify(text(r)).slice(0, 80)}`);
+
+    // ★ 反直觉：宿主 PATH 里没有 cygwin64，Cygwin 运行时仍自补 /usr/bin 让 shell 可用。
+    //   所以节点不必为了便携式 Perl 去改 PATH；但要如实知道这层「隐式环境」存在。
+    r = await run('perl', 'my $o = `echo PERL-SH-OK`; chomp $o; print "backtick=$o\\n";');
+    pass('perl/backtick', 'perl', '子进程 /bin/sh 可用（Cygwin 运行时自补 PATH）',
+      r.status === 'ok' && text(r).includes('backtick=PERL-SH-OK'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    r = await run('perl', `use IO::Socket::INET; my $s = IO::Socket::INET->new(Proto => 'udp'); print defined($s) ? 'SOCKET-OK' : 'SOCKET-FAIL'; print "\\n";`);
+    pass('perl/socket', 'perl', 'socket 可创建 ⇒ 如实登记「无内核级禁网」',
+      r.status === 'ok' && text(r).includes('SOCKET-OK') && /no-enforcement/.test(r.probes?.network ?? ''),
+      `status=${r.status} out=${text(r).slice(0, 80)} probes.network=${r.probes?.network ?? '无'}`);
+
+    r = await run('perl', 'my $x = ;');
+    pass('perl/syntax-error', 'perl', '语法错误进 stderr 且带非零退出码',
+      hasStderr(r) && /syntax error/i.test(text(r)) && r.exitCode !== 0 && r.exitCode !== null,
+      `status=${r.status} exitCode=${r.exitCode} out=${text(r).slice(0, 140)}`);
+
+    r = await run('perl', 'sleep(30);', { wallMs: 700 });
+    pass('perl/timeout', 'perl', '墙钟超时被终止并回报 TO',
+      r.status === 'timeout' && r.timedOut &&
+        r.diagnostics.some((d) => /TO|超时|终止/.test(d.message)),
+      `status=${r.status} timedOut=${r.timedOut} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('perl', 'for (1..4000) { print "012345678901234567890123456789\\n" }', { outputBytes: 512 });
+    pass('perl/output-limit', 'perl', '输出字节限额生效',
+      r.status === 'output-limit' && text(r).length <= 512 + 64,
+      `status=${r.status} bytes=${text(r).length}`);
+
+    const escapeSrc = 'print 1;';
+    r = await run('perl', escapeSrc, { files: [{ name: '../evil.pl', content: escapeSrc }] });
+    pass('perl/path-escape', 'perl', '文件名路径逃逸被节点拒绝',
+      r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
   }
 
   // ---------- 默认示例：用户打开页面点「运行」看到的第一份代码 ----------

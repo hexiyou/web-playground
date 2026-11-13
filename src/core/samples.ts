@@ -230,6 +230,45 @@ echo "upper = " . strtoupper('php ok') . "\\n";
     ],
     hint: '仅服务端执行：先 npm run server 启动本机执行节点。单阶段解释执行（无 compile 阶段），启动几十毫秒；附加 .php 文件同目录可 require。节点每次动态探测本机 PHP，未安装或不就绪会自动置灰，可在 servers/local/runtimes.local.json 里给便携式 PHP 配绝对路径。结果仅参考、不可用于判分。',
   },
+  perl: {
+    files: [
+      {
+        name: 'main.pl',
+        content: `use strict;
+use warnings;
+use utf8;
+binmode(STDOUT, ':encoding(UTF-8)');
+use Cwd qw(getcwd);
+use JSON::PP;
+
+my @nums = (1, 2, 3, 4, 5);
+my $sum = 0;
+$sum += $_ for @nums;
+
+print "你好，playground\\n";
+print "sum = $sum\\n";
+
+my $line = <STDIN>;
+chomp $line if defined $line;
+print "stdin = ", (defined $line ? $line : ''), "\\n";
+
+print "json = ", JSON::PP->new->encode({ 城市 => '昆明', nums => \\@nums }), "\\n";
+print "upper = ", uc('perl ok'), "\\n";
+print "OS = $^O\\n";
+print "cwd = ", getcwd(), "\\n";
+
+# 本机走 Cygwin Perl：可执行文件由 servers/local/runtimes.local.json 配绝对路径，
+# 不在 PATH、也没写注册表。$^O 是 cygwin，getcwd() 返回 /cygdrive/c/...，
+# 路径分隔符是 / —— 和 Git Bash 的 MSYS2 是两套 POSIX 运行时，别混用 /tmp 之类路径。
+# 中文必须 use utf8 + binmode(STDOUT, ':encoding(UTF-8)') 配套；
+# 只写 binmode ':utf8' 会把 UTF-8 字节当 Latin-1 升级，输出变乱码。
+# 附加 .pl 文件写进同一临时目录；节点加了 -I. 才能 require 'helper.pl'
+# （Perl 5.26+ 把 . 从 @INC 移除了）。没有内核级隔离，结果仅参考、不可用于判分。
+`,
+      },
+    ],
+    hint: '仅服务端执行：先 npm run server 启动本机执行节点。本机用 Cygwin Perl 5.32（非原生 Windows Perl），路径写在 servers/local/runtimes.local.json 的 perl.path；节点每次动态探测并把 $^O 如实登记到 probes.runtimeFlavor。中文要 use utf8 + binmode 编码层配套。结果仅参考、不可用于判分。',
+  },
   css: {
     files: [
       {

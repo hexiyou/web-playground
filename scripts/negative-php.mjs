@@ -16,8 +16,8 @@ const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const vitestBin = join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const report = join(root, '.negative-php-report.json');
 
-const NEEDLE = "    languages: ['go', 'php'],";
-const BROKEN = "    languages: ['go'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl'],";
+const BROKEN = "    languages: ['go', 'perl'],";
 
 const EXPECTED_RED = [
   'Runner 同时接线 go 与 php，档位仍是 process-only / advisory',
