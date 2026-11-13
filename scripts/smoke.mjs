@@ -21,6 +21,8 @@ const MODE =
     ? 'preview'
     : 'dev';
 const REPORT_FILE = process.env.PLAYGROUND_REPORT_FILE || '';
+/** 自检等待窗口。排障时可用 PLAYGROUND_SELFTEST_TIMEOUT_MS 缩短，别直接改死值。 */
+const SELFTEST_TIMEOUT_MS = Number(process.env.PLAYGROUND_SELFTEST_TIMEOUT_MS || 150000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TARGET = `${BASE}/?selftest=1`;
 /** 本地执行节点是另一个端口，但它同样是「本地」，不能被算成外部请求。 */
@@ -124,12 +126,23 @@ async function main() {
     const pending = new Map();
     const localUrls = new Set();
     const externalUrls = new Set();
+    const pageErrors = [];
     ws.addEventListener('message', (ev) => {
       const data = JSON.parse(String(ev.data));
       if (data.id && pending.has(data.id)) {
         const { resolve } = pending.get(data.id);
         pending.delete(data.id);
         resolve(data);
+      }
+      // 超时诊断：页面 JS 抛错会让自检根本不启动，只押「报告没出现」看不到原因。
+      if (data.method === 'Runtime.exceptionThrown') {
+        const d = data.params?.exceptionDetails ?? {};
+        pageErrors.push(`[exception] ${d.text ?? ''} ${d.exception?.description ?? ''}`.trim().slice(0, 600));
+      }
+      if (data.method === 'Runtime.consoleAPICalled' &&
+          (data.params?.type === 'error' || data.params?.type === 'warning')) {
+        const args = (data.params?.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ');
+        pageErrors.push(`[console.${data.params.type}] ${args}`.slice(0, 400));
       }
       // 网络守卫：probes 里的 URL 只是「代码声称从哪加载」，这里看真实发出的请求。
       // Pyodide 是第一个可能偷偷回退到 CDN 拉 wheel 的运行时，必须有这一层硬证据。
@@ -161,7 +174,7 @@ async function main() {
     const expr = 'window.__PLAYGROUND_SELFTEST__ ? JSON.stringify(window.__PLAYGROUND_SELFTEST__) : null';
     let report = null;
     // Go 每次执行都要 go build（本机约 1.5s，冷编译更久），窗口比 v0.4 放宽。
-    const deadline = Date.now() + 150000;
+    const deadline = Date.now() + SELFTEST_TIMEOUT_MS;
     while (Date.now() < deadline) {
       const reply = await send('Runtime.evaluate', { expression: expr, returnByValue: true });
       const value = reply?.result?.result?.value;
@@ -172,7 +185,14 @@ async function main() {
       await sleep(300);
     }
 
-    if (!report) throw new Error('150 秒内页面没有产出自检报告');
+    if (!report) {
+      const stateExpr = `JSON.stringify({ready:document.readyState,hasReport:!!window.__PLAYGROUND_SELFTEST__,wiring:document.querySelector('#wiring')?.textContent??null,selftestHidden:document.querySelector('#selftest')?.hidden??null,bodyLen:document.body?.innerText?.length??0})`;
+      const state = await send('Runtime.evaluate', { expression: stateExpr, returnByValue: true });
+      console.error('[诊断] 页面状态：' + (state?.result?.result?.value ?? '无'));
+      console.error('[诊断] 页面错误（末 25 条）：\n' + (pageErrors.slice(-25).join('\n') || '（无）'));
+      console.error(`[诊断] 已抓请求：同源 ${localUrls.size}（/api/v2/ ${[...localUrls].filter((u) => u.includes('/api/v2/')).length} 条 /pyodide/ ${[...localUrls].filter((u) => u.includes('/pyodide/')).length} 条）· 外部 ${externalUrls.size}`);
+      throw new Error(`${SELFTEST_TIMEOUT_MS} 秒内页面没有产出自检报告`);
+    }
 
     if (REPORT_FILE) writeFileSync(REPORT_FILE, JSON.stringify(report, null, 2));
     console.log(`[真机自检] 模式 ${MODE} · 通过 ${report.passed} · 失败 ${report.failed} · 记账跳过 ${report.skipped} · 共 ${report.assertions.length} 条`);

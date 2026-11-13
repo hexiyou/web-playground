@@ -1,6 +1,8 @@
 /**
- * Go / A′ 真机层拆线负例：把 main.ts 里注入的本地执行节点 Runner 摘掉。
- * 期望 Go 相关判据 + 全局接线门控精确红，其余语言判据全绿、2 条记账跳过不动。
+ * 服务端真机层拆线负例：把 main.ts 里注入的本地执行节点 Runner 摘掉。
+ * v0.6 起 A′ 同时承载 Go 与 PHP，所以这一刀会让**两门服务端语言一起红**；
+ * 期望 Go / PHP 全部判据 + 全局接线门控精确红，其余浏览器语言判据全绿、
+ * 2 条记账跳过不动。想只拆一门请用 smoke:negative:php。
  *
  * 这条负例专门治「单元判据对没接线天生免疫」：单测里注入的是自己造的 registry，
  * 只有真页面的 createRegistry 调用点被拆掉，才证明 UI 那一行真的连着服务端。
@@ -34,6 +36,20 @@ const EXPECTED_RED = [
   'go/timeout',
   'go/wiring',
   'sample/go',
+  'php/capability',
+  'php/multi-file',
+  'php/output-limit',
+  'php/path-escape',
+  'php/syntax-error',
+  'php/stdin',
+  'php/stdout',
+  'php/stderr',
+  'php/timeout',
+  'php/url-wrapper',
+  'php/utf8',
+  'php/version',
+  'php/wiring',
+  'sample/php',
 ].sort();
 
 const EXPECTED_SKIPS = ['css/infinite-loop', 'html/infinite-loop'].sort();

@@ -45,6 +45,7 @@ const FILE_NAMES: Record<LangId, string> = {
   sql: 'main.sql',
   python: 'main.py',
   go: 'main.go',
+  php: 'main.php',
 };
 
 function fileName(lang: LangId): string {
@@ -520,6 +521,95 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     pass('go/stdlib-only', 'go', '第三方包不可拉取（GOPROXY=off 零外联）',
       r.status !== 'ok' && /GOPROXY|no required module|module lookup disabled|disabled/i.test(text(r)),
       `status=${r.status} out=${text(r).slice(0, 140)}`);
+  }
+
+  // ---------- PHP（A′ 本机进程执行节点 · 单阶段解释执行 · 仅 server） ----------
+  // 与 Go 互补：第一次真机跑「compile 缺省」分支、单阶段 probes、多语言 runtimes 映射。
+  // 判据只押可观察副作用（stdout / stderr / exitCode / probes / status），不押毫秒数。
+  {
+    const phpCap = capabilityFor(caps, 'php');
+    pass('php/wiring', 'php', 'PHP 只有 server 位置且不可判分',
+      phpCap.available && phpCap.targets.length === 1 && phpCap.targets[0] === 'server' &&
+        phpCap.prefer === 'server' && !phpCap.trusted && phpCap.trust === 'advisory' &&
+        phpCap.isolation.includes('process-only'),
+      `targets=${phpCap.targets.join('/')} trust=${phpCap.trust} isolation=${phpCap.isolation.join('/')}`);
+
+    let r = await run('php', '<?php echo "PHP-STDOUT-MARK\\n";');
+    pass('php/stdout', 'php', '本机 PHP CLI stdout 回显',
+      r.status === 'ok' && text(r).includes('PHP-STDOUT-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+    pass('php/capability', 'php', '单阶段 / 动态探测来源 / 无内存谎报 / URL 包装器已关',
+      r.target === 'server' && r.engine === 'local.process.v1' &&
+        r.probes?.stages === 'run' &&
+        (r.probes?.runtimePathSource === 'config' || r.probes?.runtimePathSource === 'path') &&
+        typeof r.probes?.runtimeVersion === 'string' && r.probes.runtimeVersion.length > 0 &&
+        /allow_url_fopen=0/.test(r.probes?.network ?? '') &&
+        r.probes?.isolation === 'process-only' && r.probes?.trust === 'advisory' &&
+        r.probes?.memoryCapability === 'no-memory-cap' && r.usage?.memoryBytes === undefined,
+      `engine=${r.engine} probes=${JSON.stringify(r.probes ?? {}).slice(0, 220)}`);
+
+    r = await run('php', '<?php echo PHP_VERSION;');
+    pass('php/version', 'php', 'runtimes 动态探测的版本与解释器自报一致',
+      r.status === 'ok' && r.probes?.runtimeVersion === text(r).trim(),
+      `reported=${r.probes?.runtimeVersion ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('php', '<?php $line = fgets(STDIN); echo "STDIN: " . trim($line === false ? "" : $line);',
+      { stdin: 'marker-42' });
+    pass('php/stdin', 'php', 'stdin 注入并读回',
+      r.status === 'ok' && text(r).includes('STDIN: marker-42'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('php', '<?php fwrite(STDERR, "PHP-STDERR-MARK\\n"); exit(2);');
+    pass('php/stderr', 'php', 'stderr 与真实退出码',
+      hasStderr(r) && text(r).includes('PHP-STDERR-MARK') && r.exitCode === 2,
+      `status=${r.status} exitCode=${r.exitCode} stderr=${text(r).slice(0, 100)}`);
+
+    r = await run('php',
+      '<?php echo "中文标记：昆明\\n"; echo json_encode(["城市" => "昆明"], JSON_UNESCAPED_UNICODE) . "\\n";');
+    pass('php/utf8', 'php', '中文 UTF-8 往返与 JSON_UNESCAPED_UNICODE',
+      r.status === 'ok' && text(r).includes('中文标记：昆明') && text(r).includes('昆明'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    const mainSrc = '<?php require "helper.php"; echo "HELPER: " . phpLabel();';
+    r = await run('php', mainSrc, {
+      files: [
+        { name: 'main.php', content: mainSrc },
+        { name: 'helper.php', content: '<?php function phpLabel(): string { return "HELPER-MARK"; }' },
+      ],
+    });
+    pass('php/multi-file', 'php', '附加 .php 文件同目录可 require',
+      r.status === 'ok' && text(r).includes('HELPER: HELPER-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    r = await run('php', '<?php echo ;');
+    pass('php/syntax-error', 'php', '语法错误进 stderr 且带非零退出码',
+      hasStderr(r) && /Parse error|syntax error/i.test(text(r)) && r.exitCode !== 0 && r.exitCode !== null,
+      `status=${r.status} exitCode=${r.exitCode} out=${text(r).slice(0, 140)}`);
+
+    r = await run('php', '<?php sleep(30);', { wallMs: 700 });
+    pass('php/timeout', 'php', '墙钟超时被终止并回报 TO',
+      r.status === 'timeout' && r.timedOut &&
+        r.diagnostics.some((d) => /TO|超时|终止/.test(d.message)),
+      `status=${r.status} timedOut=${r.timedOut} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('php',
+      '<?php for ($i = 0; $i < 4000; $i++) { echo "012345678901234567890123456789\\n"; }',
+      { outputBytes: 512 });
+    pass('php/output-limit', 'php', '输出字节限额生效',
+      r.status === 'output-limit' && text(r).length <= 512 + 64,
+      `status=${r.status} bytes=${text(r).length}`);
+
+    const escapeSrc = '<?php echo 1;';
+    r = await run('php', escapeSrc, { files: [{ name: '../evil.php', content: escapeSrc }] });
+    pass('php/path-escape', 'php', '文件名路径逃逸被节点拒绝',
+      r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('php', '<?php var_dump(file_get_contents("http://127.0.0.1:9/nope"));');
+    pass('php/url-wrapper', 'php', 'allow_url_fopen=0 真挡住 URL 包装器（不静默放行）',
+      hasStderr(r) && /wrapper|allow_url_fopen|failed to open stream/i.test(text(r)) &&
+        text(r).includes('bool(false)'),
+      `status=${r.status} out=${text(r).slice(0, 180)}`);
   }
 
   // ---------- 默认示例：用户打开页面点「运行」看到的第一份代码 ----------

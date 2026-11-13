@@ -204,6 +204,32 @@ func main() {
     ],
     hint: '仅服务端执行：先 npm run server 启动本机 Go 执行节点（非 Docker、只绑 127.0.0.1）。go build + 运行两阶段，仅标准库且强制 GOPROXY=off 不外联；结果仅参考、不可用于判分。',
   },
+  php: {
+    files: [
+      {
+        name: 'main.php',
+        content: `<?php
+// PHP · 本机解释器（A′ 执行节点，非 Docker；仅服务端，单阶段无 compile）
+$nums = [1, 2, 3, 4, 5];
+$sum = array_sum($nums);
+
+echo "你好，playground\\n";
+echo "sum = " . $sum . "\\n";
+
+$line = fgets(STDIN);
+echo "stdin = " . trim($line === false ? '' : $line) . "\\n";
+
+echo "json = " . json_encode(['城市' => '昆明', 'nums' => $nums], JSON_UNESCAPED_UNICODE) . "\\n";
+echo "upper = " . strtoupper('php ok') . "\\n";
+
+// 再加一个 .php 文件会写进同一临时目录，主文件里 require 'helper.php' 即可。
+// 节点按 -d allow_url_fopen=0 关掉 URL 包装器，php.ini 用宿主机默认；
+// 没有内核级隔离，curl / sockets 扩展仍可联网。结果仅参考、不可用于判分。
+`,
+      },
+    ],
+    hint: '仅服务端执行：先 npm run server 启动本机执行节点。单阶段解释执行（无 compile 阶段），启动几十毫秒；附加 .php 文件同目录可 require。节点每次动态探测本机 PHP，未安装或不就绪会自动置灰，可在 servers/local/runtimes.local.json 里给便携式 PHP 配绝对路径。结果仅参考、不可用于判分。',
+  },
   css: {
     files: [
       {

@@ -1,6 +1,6 @@
 {
   "name": "team-playground",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "浏览器端代码片段快速验证 playground · 契约先行，服务端执行可插拔",
@@ -9,6 +9,7 @@
     "sync:pyodide": "node scripts/sync-pyodide.mjs --force",
     "dev": "vite",
     "server": "node scripts/local-server.mjs",
+    "check:node": "node scripts/check-node.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -18,6 +19,7 @@
     "negative:sql": "node scripts/negative-sql.mjs",
     "negative:python": "node scripts/negative-python.mjs",
     "negative:go": "node scripts/negative-go.mjs",
+    "negative:php": "node scripts/negative-php.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:preview": "npm run build && node scripts/smoke.mjs --preview",
     "smoke:negative": "node scripts/smoke-negative.mjs",
@@ -26,12 +28,14 @@
     "smoke:negative:sample": "node scripts/smoke-sample-negative.mjs",
     "smoke:negative:python": "node scripts/smoke-python-negative.mjs",
     "smoke:negative:go": "node scripts/smoke-go-negative.mjs",
+    "smoke:negative:php": "node scripts/smoke-php-negative.mjs",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.0",
     "@codemirror/lang-html": "^6.4.0",
     "@codemirror/lang-javascript": "^6.2.0",
+    "@codemirror/lang-php": "^6.0.2",
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.13.1",

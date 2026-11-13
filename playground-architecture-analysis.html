@@ -60,7 +60,8 @@
   最佳实践不是「选一个运行时把所有语言塞进浏览器」，而是<b>一套统一的 Runner 契约 + 一张能力表（CapFlag）+ 三类可插拔执行后端</b>：能在浏览器里跑的（JS/TS、Python、Lua、SQL、Ruby、PHP、R、C/C++/Go 编译链）走本地 WASM，跑不了的（Rust、C#、Kotlin、Swift、Bash、原生依赖、真实网络/数据库、需要可信判分）走服务端沙箱。前端只负责编辑、调度、输出呈现，<b>永远不要为某门语言在主流程里开特例</b>。<br>
   <span class="small">2026-11-11 补：<b>第十一章</b>回答「能否只留 A + 服务端」——答案是 B/C 可以全砍、A 不能砍，且服务端沙箱要按三档隔离重新选型。</span><br>
   <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span><br>
-  <span class="small">2026-11-12 再补：<b>第十三章</b>记录一次<b>刻意与官方推荐分叉</b>的决策 —— 服务端改用非 Docker 的 A′ 本机进程节点（Go 优先），含威胁模型、回切条件、三处防返工接缝与官方部署真值，<b>时间久了别忘为什么</b>。</span>
+  <span class="small">2026-11-12 再补：<b>第十三章</b>记录一次<b>刻意与官方推荐分叉</b>的决策 —— 服务端改用非 Docker 的 A′ 本机进程节点（Go 优先），含威胁模型、回切条件、三处防返工接缝与官方部署真值，<b>时间久了别忘为什么</b>。</span><br>
+  <span class="small">2026-11-13 补 <b>13.8</b>：A′ 从「写死只跑 Go」泛化成<b>内建规格表 + 每次真探测 + 可配置运行时路径</b>，并接入第二门服务端语言 <b>PHP</b>；记下「宿主机前置不会消失」与新踩的三个坑。</span>
 </div>
 
 <div class="toc">
@@ -595,9 +596,24 @@ interface Capability {
 
 <h3>13.7 v0.5 基线</h3>
 <p>单测 <b>69</b> · 真机 <b>86 条（84 绿 / 2 条记账跳过）</b> · dev + dist 双层 · 拆线负例 <b>11 组</b>（新增单测层 <code>negative:go</code> 精确红 3、真机层 <code>smoke:negative:go</code> 精确红 13）· CDP 抓包实证零包仓库请求且本地节点 <code>/api/v2/</code> 请求 ≥2 条 · Go 单二进制 10.5 MB 不入库 · 首屏体积见页面说明。<b>仍欠</b>：Ruby / PHP / R / Java 未接 · A′ 无 CPU/内存硬限额 · Windows 进程树 kill 不保证 · 无可信判分链路。</p>
-<p class="small">节点自身的完整真值（接口字段、probes 清单、起停参数、已知坑、回切清单）在 <code>servers/local/README.md</code>，本手册只记决策与口径。</p>
+<h3>13.8 v0.6：从单语言节点到「规格表 + 动态探测 + 可配置路径」</h3>
+<p>接 PHP 时何工提了个很实际的要求：<b>有些运行时是便携式的，不在 PATH、也没写注册表，得能在后端指到绝对路径；网页前台不用暴露这个选项</b>。于是这一轮没有再写第二个 <code>if language == ...</code> 分支，而是把节点整体泛化：</p>
+<ul>
+<li><b>内建 <code>builtinSpecs()</code> 规格表</b>：每门语言声明 <code>execName / detectArgs / versionRe / extensions / entryName / envStrip / envSet / probeExtra / prepare / compile / run</code>。<code>compile == nil</code> 就是单阶段语言（PHP），否则两阶段（Go）。<code>execute()</code> 只剩一条通用流水线：查 spec → 解析可执行文件 → 校验文件名 → 写临时目录 → 可选 compile → run → probes。</li>
+<li><b><code>GET /api/v2/runtimes</code> 每次真探测</b>：不缓存、不硬编码版本；<code>disabled</code> 优先（「关」必须是第一句），<code>path</code> 配了就 <code>os.Stat</code> 校验，否则 <code>exec.LookPath</code> 回退；再带 3 秒超时跑版本命令。探测失败的语言不登记 ⇒ 前端把「必须预装工具链」从隐含前置变成<b>可见约束</b>（<code>unavailable</code> + 安装/配置指引）；<code>POST execute</code> 也重探测一次，便携盘拔走后不会拿旧路径跑。<code>/health.missing</code> 给原因，不污染线协议。</li>
+<li><b>路径配置只在后端</b>：<code>servers/local/runtimes.json</code> 是入库模板，<code>runtimes.local.json</code> 是本机覆盖且不入库；<code>-config</code> 可显式指定，文件不存在直接报错。相对路径在加载时转绝对（执行阶段 <code>cmd.Dir</code> 是临时目录）。<code>source = config | path</code> 随 runtimes 与 <code>probes.runtimePathSource</code> 如实回报。</li>
+</ul>
+<p><b>三个新坑（都会伪装成全绿）</b>：</p>
+<ol>
+<li>★★ <b><code>go build -o</code> 与 run 必须用同一个 exeName</b>：抽 spec 表时把 Windows <code>.exe</code> 后缀挪进 run plan，compile 仍写无后缀名 ⇒ 编译 <code>code=0</code> 却报 <code>program.exe: file not found</code>。手工 API 验证抓到，纯函数单测抓不到。现在后缀在 <code>execute()</code> 统一补一次。</li>
+<li>★★ <b>CDP 抓包证明不了节点进程的网络行为</b>：浏览器只监听自己的 target，节点进程发的请求一条也看不到。「零外联」判据只证明前端资产同源自托管；服务端侧只能靠 <code>probes.network</code> 自述 + 行为判据，<b>都不能替代内核隔离</b>。PHP 关掉 URL 包装器只是尽力而为，curl / sockets 仍在。</li>
+<li>★ <b>配置路径生效不能靠文档自述</b>：新增 <code>npm run check:node</code>，在独立端口重启节点四次，只押接口看得见的事实 —— 配了 path ⇒ <code>source=config</code> 且真吐字节；坏路径 ⇒ 从 runtimes 消失 + execute 400；<code>disabled:true</code> ⇒ PATH 里有也不登记；<code>path:""</code> ⇒ <code>source=path</code>。共 14 条。</li>
+</ol>
+<p><b>宿主机前置没有消失，只是变可见了</b>：A′ 每加一门语言要 ① 本机装解释器/编译器（或配 path）② 节点 spec 表登记 ③ 前端五步；官方 Piston 的 <code>ppman install</code> 省的是「每台机器手工配环境」，没省「安装」这个动作本身，且容器起来是零语言、compose 不自动装、volume 不持久化就清零。分叉依据仍是威胁模型，见 13.2 / 13.4。</p>
+<p class="small">v0.6 基线：单测 <b>77</b> · 真机 dev/dist 双层各 <b>100 条（98 绿 / 2 条记账跳过）</b> · 节点判据 <b>14</b> · 拆线负例 <b>13 组</b>（新增单测层 <code>negative:php</code> 精确红 3、真机层 <code>smoke:negative:php</code> 精确红 15；<code>smoke:negative:go</code> 因服务端现有两门语言扩到 27 条红）。数字以最终验收输出为准。</p>
+<p class="small">节点自身的完整真值（配置格式、接口字段、probes 清单、起停参数、已知坑、回切清单）在 <code>servers/local/README.md</code>，本手册只记决策与口径。</p>
 
-<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）</div>
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）· 2026-11-13 补 13.8（v0.6 规格表 / 动态探测 / 路径配置）</div>
 </div>
 </body>
 </html>

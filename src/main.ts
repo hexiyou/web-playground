@@ -120,7 +120,7 @@ function renderLangOptions(): void {
 function renderSandboxOptions(): void {
   const cap = currentCap();
   sandboxSel.replaceChildren();
-  // 纯服务端语言（Go）没有浏览器载体，如实显示「仅服务端」而不是伪造 Worker/iframe 选项。
+  // 纯服务端语言（Go / PHP）没有浏览器载体，如实显示「仅服务端」而不是伪造 Worker/iframe 选项。
   if (cap.switchable.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
@@ -184,6 +184,11 @@ async function languageExtension(lang: LangId) {
       import('@codemirror/legacy-modes/mode/go'),
     ]);
     return StreamLanguage.define(go);
+  }
+  if (lang === 'php') {
+    // legacy-modes 里没有 PHP（CM5 的 php 是混合模式，被排除），用官方 lang-php。
+    const { php } = await import('@codemirror/lang-php');
+    return php();
   }
   const { css } = await import('@codemirror/lang-css');
   return css();

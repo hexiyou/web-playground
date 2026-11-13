@@ -50,6 +50,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('A′ 本地执行节点 Runner 元数据', () => {
   it('语言名映射归后端自有，不写进 LANG_DEFS', () => {
     expect(LOCAL_LANGUAGES.go).toBe('go');
+    expect(LOCAL_LANGUAGES.php).toBe('php');
     expect(LOCAL_LANGUAGES.sql).toBeUndefined();
   });
 
@@ -58,7 +59,7 @@ describe('A′ 本地执行节点 Runner 元数据', () => {
     expect(r.id).toBe('local.process.v1');
     expect(r.target).toBe('server');
     expect(r.enabled).toBe(true);
-    expect(r.languages).toEqual(['go']);
+    expect(r.languages).toEqual(['go', 'php']);
     expect(r.isolation).toBe('process-only');
     expect(r.trust).toBe('advisory');
   });

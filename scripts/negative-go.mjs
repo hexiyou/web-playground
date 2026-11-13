@@ -15,7 +15,7 @@ const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const vitestBin = join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const report = join(root, '.negative-go-report.json');
 
-const NEEDLE = "    languages: ['go'],";
+const NEEDLE = "    languages: ['go', 'php'],";
 const BROKEN = '    languages: [],';
 
 /** 只押这三条：languages 摘空后，接线声明、档位推导、经 execute 的路由都会红。 */

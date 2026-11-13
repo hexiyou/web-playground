@@ -13,6 +13,11 @@ dist/
 .negative-python-report.json
 .negative-go-report.json
 .smoke-go-report.json
+.negative-php-report.json
+.smoke-php-report.json
+.node-check-report.json
+# 本机运行时路径覆盖（可含绝对路径，不入库）；入库模板是 runtimes.json
+servers/local/runtimes.local.json
 public/pyodide/
 servers/local/bin/
 *.log

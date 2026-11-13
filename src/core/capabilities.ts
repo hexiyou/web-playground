@@ -82,6 +82,18 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
     switchable: [],
     nativeApis: ['（仅服务端执行）', '本机 Go 工具链 · go build + 运行两阶段', '仅标准库，GOPROXY=off'],
   },
+  {
+    lang: 'php',
+    label: 'PHP',
+    extensions: ['php'],
+    browserSandbox: 'worker',
+    switchable: [],
+    nativeApis: [
+      '（仅服务端执行）',
+      '本机 PHP CLI · 单阶段解释执行，无 compile',
+      'php.ini 用宿主机默认；allow_url_fopen=0 关闭 URL 包装器',
+    ],
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {
