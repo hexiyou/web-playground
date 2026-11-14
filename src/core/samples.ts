@@ -299,6 +299,33 @@ cat("json =", paste0('{"city":"昆明","nums":[', paste(nums, collapse = ","), '
     ],
     hint: '仅服务端执行：先 npm run server 启动本机执行节点。本机用 Cygwin R 4.2，入口是 shell 脚本而非 exe，路径写在 servers/local/runtimes.local.json 的 r.path；节点用同目录 sh.exe 包装启动并净化宿主 MSYS2 / BASH_FUNC 环境。stats 命名空间在本机缺 cyglapack-0.dll，sd()/lm() 不可用且 stderr 有告警；默认示例只用 base + utils。结果仅参考、不可用于判分。',
   },
+  ruby: {
+    files: [
+      {
+        name: 'main.rb',
+        content: `# Ruby 4.0（RubyInstaller / x64-mingw-ucrt）：入口是原生 exe，节点从 PATH 直接发现
+# 单阶段 ruby -I . main.rb；宿主 RUBYOPT / RUBYLIB / GEM_* 已被节点剥掉
+require 'json'
+
+nums = [1, 2, 3, 4, 5]
+
+puts "你好，playground"
+puts "sum = #{nums.sum}"
+puts "stdin = #{(STDIN.gets || '').strip.inspect}"
+puts "upper = #{'ruby ok'.upcase}"
+puts "platform = #{RUBY_PLATFORM}"
+puts "cwd = #{Dir.pwd}"
+puts "json = #{JSON.generate({ city: '昆明', nums: nums })}"
+
+# Windows 原生 Ruby 的 puts 输出 CRLF，节点不改写字节（Cygwin Perl / R 是 LF）。
+# 附加 .rb 文件写进同一临时目录；节点加了 -I .，require 'helper' 可加载。
+# 标准库 json / socket 可用，第三方 gem 随机器变化，别指望可复现。
+# 没有内核级隔离，结果仅参考、不可用于判分。
+`,
+      },
+    ],
+    hint: '仅服务端执行：先 npm run server 启动本机执行节点。本机 Ruby 4.0 从 PATH 发现（RubyInstaller 原生 exe，不是 Cygwin 脚本），无需在 runtimes.local.json 配 path；节点单阶段执行 ruby -I . main.rb，并剥掉宿主 RUBYOPT / RUBYLIB / GEM_*。Windows 原生 puts 输出 CRLF，节点如实回传不归一化；标准库 json / socket 可用，第三方 gem 随机器变化。结果仅参考、不可用于判分。',
+  },
   css: {
     files: [
       {

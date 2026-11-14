@@ -1,11 +1,11 @@
 /**
- * R / A′ 真机层拆线负例：把 local.process.v1 声明的语言摘到只剩 go + php + perl。
+ * R / A′ 真机层拆线负例：把 local.process.v1 声明的语言摘掉 r（保留 go + php + perl + ruby）。
  * 期望全局接线门控 + 全部 18 条 R 判据（含脚本入口包装、宿主环境净化、默认包不谎报）
  * + sample/r 精确红，Go / PHP / Perl / 浏览器语言判据全绿，2 条记账跳过不动。
  * finally 无条件恢复源文件。
  *
  * 这条例抓的是「Cygwin 脚本型入口那门语言是否真接在页面注入的那一行上」：
- * 节点侧 46 条判据全绿也证明不了前端接线，只有真页面跑一遍才看得见。
+ * 节点侧 62 条判据全绿也证明不了前端接线，只有真页面跑一遍才看得见。
  */
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -16,8 +16,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const reportFile = join(root, '.smoke-r-report.json');
 
-const NEEDLE = "    languages: ['go', 'php', 'perl', 'r'],";
-const BROKEN = "    languages: ['go', 'php', 'perl'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl', 'r', 'ruby'],";
+const BROKEN = "    languages: ['go', 'php', 'perl', 'ruby'],";
 
 const EXPECTED_RED = [
   'global/wiring',

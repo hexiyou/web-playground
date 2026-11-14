@@ -62,7 +62,7 @@
   <span class="small">2026-11-12 补：<b>第十二章</b>是实际把 Lua / SQL / Python 三门 WASM 接进代码之后的实测账 —— 三种自托管形态、真实体积、判据纪律与新增坑。</span><br>
   <span class="small">2026-11-12 再补：<b>第十三章</b>记录一次<b>刻意与官方推荐分叉</b>的决策 —— 服务端改用非 Docker 的 A′ 本机进程节点（Go 优先），含威胁模型、回切条件、三处防返工接缝与官方部署真值，<b>时间久了别忘为什么</b>。</span><br>
   <span class="small">2026-11-13 补 <b>13.8</b>：A′ 从「写死只跑 Go」泛化成<b>内建规格表 + 每次真探测 + 可配置运行时路径</b>，并接入第二门服务端语言 <b>PHP</b>；记下「宿主机前置不会消失」与新踩的三个坑。</span>
-  <span class="small">2026-11-13 补 <b>13.9</b>：刻意选 <b>Cygwin Perl</b>（非 Windows 原生、不在 PATH）验证「本项目调用非原生 POSIX 运行时是否符合预期」—— 跑通无阻断，但记下中文 argv 假象、UTF-8 编码层、<code>/cygdrive/</code> 路径、DLL 依赖、<code>@INC</code> 等一整组坑；完整 10 条实测清单在节点手册 §8，<b>后续接 Ruby / R / Java / WSL 之前先读</b>。</span>
+  <span class="small">2026-11-13 补 <b>13.9</b>：刻意选 <b>Cygwin Perl</b>（非 Windows 原生、不在 PATH）验证「本项目调用非原生 POSIX 运行时是否符合预期」—— 跑通无阻断，但记下中文 argv 假象、UTF-8 编码层、<code>/cygdrive/</code> 路径、DLL 依赖、<code>@INC</code> 等一整组坑；完整 10 条实测清单在节点手册 §8，<b>后续接 Java / WSL / 其它非原生运行时之前先读</b>。</span>
   <span class="small">2026-11-13 补 <b>13.10</b>：<b>Cygwin R</b> 的入口是 <code>#!/bin/sh</code> 脚本而非可执行文件 —— 这一门把「入口形态」逼成了一等配置，节点新增通用 <code>wrapEntry</code> / <code>envFromTool</code> 钩子；最贵的一条是宿主以 <code>BASH_FUNC_*%%</code> 导出的 bash 函数污染 Cygwin sh。完整 20 项实测与 10 条坑在节点手册 §9。</span>
 </div>
 
@@ -630,7 +630,7 @@ interface Capability {
 <li>★ <b>宿主 PATH 没有 cygwin64，backtick 却照样能起 <code>/bin/sh</code></b>：Cygwin 运行时初始化自补 <code>/usr/bin</code>，<code>cygwin1.dll</code> / <code>cygperl5_32.dll</code> 靠 exe 同目录被找到（Windows DLL 搜索顺序）。节点<b>不需要</b>注入 PATH，但这是隐式环境，别当成「节点提供了完整 POSIX」；只拷 <code>perl.exe</code> 不带 dll 必然起不来。</li>
 <li>★ <b>Perl 5.26+ 把 <code>.</code> 移出 <code>@INC</code></b>：多文件 <code>require 'helper.pl'</code> 会挂，spec 加 <code>-I .</code> 才与 Go/PHP 语义一致；<code>probes.includePath=-I.</code> 如实登记。</li>
 </ol>
-<p><b>对后续接 Ruby / R / Java / WSL 运行时的口径</b>：① 路径用配置、能力表照这一刻探测；② 风味与版本由解释器自报，判据不押死具体值；③ 九项必验（stdin / stdout / stderr / 退出码 / 编码层 / cwd / 换行 / 子进程 / socket）；④ 越完整的运行时越不能对外宣称沙箱。分叉依据仍是 13.2 / 13.4 的威胁模型。</p>
+<p><b>对后续接 Java / WSL 运行时的口径</b>（v0.7 时列的清单，R 与 Ruby 已按此接入）：① 路径用配置、能力表照这一刻探测；② 风味与版本由解释器自报，判据不押死具体值；③ 九项必验（stdin / stdout / stderr / 退出码 / 编码层 / cwd / 换行 / 子进程 / socket）；④ 越完整的运行时越不能对外宣称沙箱。分叉依据仍是 13.2 / 13.4 的威胁模型。</p>
 <p class="small">v0.7 基线：单测 <b>85</b> · 真机 dev/dist 双层各 <b>119 条（117 绿 / 2 条记账跳过）</b> · 节点判据 <b>26</b> · 拆线负例 <b>15 组</b>（新增单测层 <code>negative:perl</code> 红 3、真机层 <code>smoke:negative:perl</code> 红 20；<code>smoke:negative:go</code> 因服务端现有三门语言扩到 46 条红）· 首屏 <b>18.50 KiB</b>、Perl 语法 chunk <b>3.34 KiB</b>。数字以最终验收输出为准。</p>
 
 <h3>13.10 v0.8：Cygwin R 把「入口形态」逼成一等配置</h3>
@@ -644,7 +644,17 @@ interface Capability {
 <p><b>对威胁模型的影响是零</b>：R 的 <code>serverSocket(0)</code> 能监听、<code>system()</code> 可用，A′ 依旧没有笼子 ⇒ 仍是 <code>process-only</code> / <code>advisory</code>、结果不可判分，<code>probes.network=no-enforcement;serverSocket-available</code> 明写；CDP 抓包只覆盖浏览器 target，看不到节点进程，别对外宣称零外联。<b>三处防返工接缝一处没动</b>：<code>createRegistry(getMount, serverRunners)</code> 注入实例、<code>trusted</code> 由 Runner 的 <code>trust</code> 推导、后端专有语言名在 <code>PISTON_LANGUAGES</code>/<code>LOCAL_LANGUAGES</code> —— 脚本包装全部留在 A′ 节点侧，回切官方 Docker + Piston 时前端一行不改。分叉依据仍是 13.2 / 13.4。</p>
 <p class="small">v0.8 基线：单测 <b>93</b> · 真机 dev/dist 双层各 <b>138 条（136 绿 / 2 条记账跳过）</b> · 节点判据 <b>46</b> · 拆线负例 <b>17 组</b>（新增单测层 <code>negative:r</code> 红 3、真机层 <code>smoke:negative:r</code> 红 20；<code>smoke:negative:go</code> 因服务端现有四门语言扩到 65 条红）· CDP 抓包 dev 同源 55 / dist 同源 14、外部均 0 条且 <code>/pyodide/</code> 4 条 / <code>/api/v2/</code> 2 条 · 首屏 <b>19.17 KiB</b>（JS 17.57 + CSS 1.59）、R 语法 chunk <b>1.34 KiB</b>。完整 20 项实测与 10 条坑清单在 <code>servers/local/README.md</code> §9，本手册只记决策与口径。</p>
 
-<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）· 2026-11-13 补 13.8（v0.6 规格表 / 动态探测 / 路径配置）、13.9（v0.7 Cygwin Perl 实测分叉）与 13.10（v0.8 Cygwin R 脚本型入口 / 环境净化）</div>
+<h3>13.11 v0.9：Ruby 把「原生 PE + PATH 直发现」钉成另一极</h3>
+<p>何工点明「本机 Windows 已安装最新版本 Ruby，PATH 下应当能发现解释器」。实测是 <b>RubyInstaller2 4.0.9 / x64-mingw-ucrt</b>：<code>C:\Ruby40-x64\bin\ruby.exe</code> 是 33 KB 的 MZ/PE，<code>--version</code> 一行同时给出版本与 <code>[x64-mingw-ucrt]</code>。<b>「应当能发现」不能当结论</b>：节点 <code>exec.LookPath("ruby")</code> 真探测、<code>source=path</code>，并用 <code>disabled</code> 优先 / 空 path 回退两条判据反证 —— 一次绿灯证明不了「关」和「缺」也会如实报。</p>
+<ul>
+<li><b>与 R 正好是入口形态的两极</b>：R 的 <code>#!/bin/sh</code> 要 <code>wrapEntry</code> + <code>envFromTool</code> 白名单重建环境；Ruby 是原生 PE，<b>两者都不需要</b>，但 <code>PATH</code> 必须保留（Ruby 靠它找 DLL / 子进程）。同一张 <code>builtinSpecs()</code> 表只是「钩子有 / 无」，<code>execute()</code> 仍零语言分支 ⇒ 13.10 的通用化不是给 Cygwin 开的后门。</li>
+<li><b>净化策略按运行时分档</b>：非原生 POSIX 白名单重建；原生 Windows 只剥 <code>RUBYOPT / RUBYLIB / GEM_* / BUNDLE_*</code>。<code>check:node</code> 故意注入 <code>RUBYOPT=-rjson</code> 再让 Ruby 自报 <code>ENV</code>，否则净化判据天生恒绿。</li>
+<li><b>平台差异如实登记，不用开关抹平</b>：Windows 原生 Ruby 的 <code>puts</code> / <code>STDOUT.write</code> 输出 CRLF（Cygwin Perl / R 是 LF），节点<b>不归一化</b>用户字节，<code>probes.lineEndings=no-normalization;platform-native</code>，判据按解释器自报的 flavor 押「该有的换行」；Ruby 1.9+ 把 <code>.</code> 移出 <code>$LOAD_PATH</code> ⇒ <code>-I .</code> 补齐「附加文件同目录」语义。两处都是<b>登记 + 判据</b>，不是「设个环境变量盖掉」。</li>
+<li><b>对威胁模型影响为零</b>：<code>TCPServer</code> 可监听、标准库 <code>json / openssl</code> 可用、第三方 gem 随机器变化 ⇒ 仍 <code>process-only</code> / <code>advisory</code>、结果不可判分，<code>probes.network=no-enforcement;TCPServer-available</code>。CDP 抓包只覆盖浏览器 target，看不到节点进程。</li>
+</ul>
+<p class="small">v0.9 基线：单测 <b>101</b> · 真机 dev/dist 双层各 <b>157 条（155 绿 / 2 条记账跳过）</b> · 节点判据 <b>62</b> · 拆线负例 <b>19 组</b>（新增单测层 <code>negative:ruby</code> 红 3、真机层 <code>smoke:negative:ruby</code> 红 20；<code>smoke:negative:go</code> 扩到 84 条红）· CDP 抓包 dev 同源 55 / dist 同源 12～20（随缓存与构建波动）、外部均 0 条且 <code>/pyodide/</code> 4 条 / <code>/api/v2/</code> 2 条 · 首屏 <b>19.77 KiB</b>（JS 18.18 + CSS 1.59）、Ruby 语法 chunk <b>2.11 KiB</b>。完整 14 项实测与 6 条坑清单在 <code>servers/local/README.md</code> §10，本手册只记决策与口径。</p>
+
+<div class="foot">阿岩 · 供何工选型使用 · 2026-11-11 首发 · 2026-11-12 补第十二章（三门 WASM 落地实测）与第十三章（A′ 决策分叉）· 2026-11-13 补 13.8（v0.6 规格表 / 动态探测 / 路径配置）、13.9（v0.7 Cygwin Perl 实测分叉）与 13.10（v0.8 Cygwin R 脚本型入口 / 环境净化）· 2026-11-14 补 13.11（v0.9 Ruby 原生 PE / PATH 直发现 / CRLF 不归一化）</div>
 </div>
 </body>
 </html>

@@ -14,7 +14,7 @@ export type ExecTarget = 'browser' | 'server';
 /** 浏览器内的执行载体：Worker 可 terminate；iframe 有 DOM 但只能靠重建中止。 */
 export type BrowserSandbox = 'worker' | 'iframe';
 
-export type LangId = 'javascript' | 'typescript' | 'html' | 'css' | 'lua' | 'sql' | 'python' | 'go' | 'php' | 'perl' | 'r';
+export type LangId = 'javascript' | 'typescript' | 'html' | 'css' | 'lua' | 'sql' | 'python' | 'go' | 'php' | 'perl' | 'r' | 'ruby';
 
 /**
  * 隔离档位由 runner 自己声明，能力表只做汇总，绝不按 target 猜。

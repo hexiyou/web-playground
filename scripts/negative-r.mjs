@@ -1,9 +1,9 @@
 /**
- * R / A′ 单测层拆线负例：把 local.process.v1 的 languages 里的 r 摘掉（保留 go / php / perl）。
+ * R / A′ 单测层拆线负例：把 local.process.v1 的 languages 里的 r 摘掉（保留 go / php / perl / ruby）。
  * 期望精确红「接线声明 + 档位推导 + 经 execute 的连线层」三条，其余单测保持绿；
  * finally 无条件恢复源文件。
  *
- * 这条专门证明 R 不是搭 Perl/Go 的顺风车：只摘这一门，红集合必须恰好是 R 那三条。
+ * 这条专门证明 R 不是搭 Perl/Go 的顺风车：只摘这一门，红集合必须恰好是 R 那三条（Ruby 保留）。
  * 注意 run() 本身不检查 languages（只查 /api/v2/runtimes 动态探测结果），所以直接调
  * runner.run() 的单测不会红——只有接线声明 / 能力表推导 / 经 execute() 的路由会红。
  */
@@ -17,8 +17,8 @@ const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const vitestBin = join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const report = join(root, '.negative-r-report.json');
 
-const NEEDLE = "    languages: ['go', 'php', 'perl', 'r'],";
-const BROKEN = "    languages: ['go', 'php', 'perl'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl', 'r', 'ruby'],";
+const BROKEN = "    languages: ['go', 'php', 'perl', 'ruby'],";
 
 const EXPECTED_RED = [
   'Runner 同时接线 go / php / perl / r，档位仍是 process-only / advisory',

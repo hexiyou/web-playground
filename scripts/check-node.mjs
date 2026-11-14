@@ -1,12 +1,13 @@
 /**
- * A′ 节点层判据：手动配置运行时路径 + runtimes 动态探测 + 宿主风味 + 脚本入口包装。
+ * A′ 节点层判据：手动配置运行时路径 + runtimes 动态探测 + 宿主风味 + 入口形态。
  *
- * 真机自检（浏览器里跑）只能看到「PHP / Perl / R 能跑」，看不到「路径配置到底有没有生效」；
+ * 真机自检（浏览器里跑）只能看到「PHP / Perl / R / Ruby 能跑」，看不到「路径配置到底有没有生效」；
  * 这里直接打节点的 HTTP 接口，用五个场景把可观察副作用钉死：
- *   A 正常配置：php / perl / r 的 path 指向便携式入口 → runtimes.source=config、execute 真跑通
+ *   A 正常配置：php / perl / r 的 path 指向便携式入口，ruby 留空走 PATH →
+ *     runtimes.source=config|path、execute 真跑通；同时注入宿主 RUBYOPT / RUBYLIB 验证净化
  *   B 坏路径：路径不存在 → 该语言从 runtimes 消失、execute 明确 400（自动置灰）
- *   C disabled：PATH 里明明有 php / 配置里明明有 perl 与 r，但显式关闭优先 → 仍然不登记
- *   D 空 path：回退 PATH → php source=path；perl / r 按 PATH 里到底有没有它如实判
+ *   C disabled：PATH 里明明有 php / ruby，配置里明明有 perl 与 r，但显式关闭优先 → 仍然不登记
+ *   D 空 path：回退 PATH → php / ruby source=path；perl / r 按 PATH 里到底有没有它如实判
  *   E 脚本包装器缺失：把 r 入口拷到没有 sh.exe 的临时目录 → r 不登记、health.missing 说明原因、
  *     execute 400（反证 wrapEntry 不是摆设：脚本型入口没包装器就绝不能谎报可用）
  *
@@ -14,8 +15,11 @@
  *   的第一个真实用例。这里额外押 flavor=$^O、中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF。
  * ★ v0.8：R 的入口是 #!/bin/sh 脚本而非 PE，节点走通用 wrapEntry + envFromTool 包装与环境净化；
  *   A 场景押 entryKind / wrapper / flavor / 宿主 BASH_FUNC 净化后 stderr 干净 / stats 不谎报。
+ * ★ v0.9：Ruby 是反例 —— RubyInstaller 的 ruby.exe 是原生 PE，PATH 里能直接发现，既不需要
+ *   wrapEntry 也不需要 envFromTool。这里押 source=path、入口不是 shebang、宿主 RUBYOPT/RUBYLIB
+ *   被剥、Windows 原生 puts 的 CRLF 如实回传（节点不归一化）、-I . 让 require 同目录文件可用。
  *   判据只押接口能看到的事实，不押日志文字；每个场景都重启节点（配置只在启动时读一次）。
- *   共 46 条：node 4 · config 24 · badpath 7 · disabled 4 · fallback 4 · wrapper 3。
+ *   共 62 条：node 6 · config 36 · badpath 7 · disabled 5 · fallback 5 · wrapper 3。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
@@ -78,10 +82,12 @@ async function stopNode() {
   throw new Error('节点进程未在 3 秒内释放端口');
 }
 
-async function startNode(config) {
+async function startNode(config, extraEnv = {}) {
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   child = spawn(exe, ['-addr', `127.0.0.1:${PORT}`, '-token', TOKEN, '-config', configPath], {
     cwd: dir, stdio: 'ignore', windowsHide: true,
+    // ★ v0.9：A 场景故意注入宿主 RUBYOPT / RUBYLIB，否则「环境净化」判据天生恒绿。
+    env: { ...process.env, ...extraEnv },
   });
   let exited = false;
   child.once('exit', () => { exited = true; });
@@ -153,6 +159,36 @@ function rExecute(code, stdin = '') {
   });
 }
 
+/**
+ * ★ v0.9：Ruby 由 PATH 直接发现，解释器自己报版本 / 平台 / 可执行文件路径。
+ * 入口形态也在这里验：R 是 #!/bin/sh 脚本，Ruby 必须是原生可执行（PE / ELF）。
+ * 不硬编码 4.0.9 或 mingw，换机器 / 换 Ruby 发行版判据照样成立。
+ */
+function resolveRuby() {
+  const probe = spawnSync('ruby', ['-e', 'require "rbconfig"; puts "#{RUBY_VERSION}|#{RUBY_PLATFORM}|#{RbConfig.ruby}"'],
+    { encoding: 'utf8' });
+  if (probe.status !== 0 || !probe.stdout?.trim()) return null;
+  const [version, platform, exe] = probe.stdout.trim().split('|');
+  const flavor = /(?:mingw|mswin|cygwin|linux|darwin)/.exec(platform ?? '')?.[0] ?? '';
+  if (!version || !exe) return null;
+  let head = '';
+  try { head = readFileSync(exe).subarray(0, 4).toString('utf8'); } catch { /* 读不到就如实置灰 */ }
+  return { version, platform, flavor, exe: exe.replace(/\\/g, '/'), head };
+}
+
+/** Ruby 的最小执行请求；中文一律走 JSON body，不经过 shell argv。 */
+function rubyExecute(code, stdin = '') {
+  return api('/api/v2/execute', {
+    method: 'POST',
+    body: JSON.stringify({
+      language: 'ruby', version: '*',
+      files: [{ name: 'main.rb', content: code }],
+      stdin, args: [],
+      compile_timeout: 10000, run_timeout: 6000, output_max_size: 65536,
+    }),
+  });
+}
+
 /** 一条最小 PHP 执行请求，用来证明配置出来的解释器真的能跑代码。 */
 function phpExecute(code) {
   return api('/api/v2/execute', {
@@ -209,10 +245,23 @@ async function main() {
   check('node/r-entry-is-script', r.isScript, `入口文件头=${r.head}`);
   check('node/r-shell-present', r.hasShell, `同目录 sh.exe 存在=${r.hasShell}`);
 
+  const ruby = resolveRuby();
+  if (!ruby) {
+    throw new Error('PATH 里没有可用的 ruby；请先安装 Ruby 或在 runtimes.local.json 配 ruby.path');
+  }
+  console.log(`[前置] Ruby：${ruby.exe} 版本 ${ruby.version} 平台 ${ruby.platform} 风味 ${ruby.flavor}`);
+  check('node/ruby-executable', existsSync(ruby.exe), `RbConfig.ruby 指向的文件存在=${existsSync(ruby.exe)}`);
+  check('node/ruby-entry-is-native', ruby.head.length > 0 && !ruby.head.startsWith('#!'),
+    `入口头=${JSON.stringify(ruby.head)}（原生 PE/ELF，不是 shebang 脚本）`);
+
   // ---------- A 正常配置路径 ----------
+  // ★ 故意注入宿主 Ruby 启动选项与 gem 路径：没净化时 Ruby 会读到，判据必须抓到。
   await startNode({
-    runtimes: { go: { path: '' }, php: { path: phpExe }, perl: { path: perl.exe }, r: { path: r.path } },
-  });
+    runtimes: {
+      go: { path: '' }, php: { path: phpExe }, perl: { path: perl.exe },
+      r: { path: r.path }, ruby: { path: '' },
+    },
+  }, { RUBYOPT: '-rjson', RUBYLIB: tmpdir() });
   {
     const rt = await api('/api/v2/runtimes');
     const list = Array.isArray(rt.body) ? rt.body : [];
@@ -335,6 +384,75 @@ async function main() {
     const crlfROut = crlfR.body?.run?.stdout ?? '';
     check('config/r-no-crlf', crlfROut.includes('A\nB') && !crlfROut.includes('\r'),
       `stdout=${JSON.stringify(crlfROut.slice(0, 40))}`);
+
+    // ---------- Ruby / 原生 PE 入口 + 纯 PATH 探测专属硬判据 ----------
+    const rubyEntry = list.find((x) => x.language === 'ruby');
+    check('config/runtimes-ruby-source-path', !!rubyEntry && rubyEntry.source === 'path' &&
+      rubyEntry.version === ruby.version,
+      `ruby=${JSON.stringify(rubyEntry ?? null)} 期望 version=${ruby.version}`);
+    check('config/runtimes-ruby-flavor', !!rubyEntry && rubyEntry.flavor === ruby.flavor,
+      `flavor=${rubyEntry?.flavor ?? '无'} 期望=${ruby.flavor}`);
+
+    const rbRun = await rubyExecute('puts "NODE-RUBY-PATH-OK"');
+    const rbOut = rbRun.body?.run?.stdout ?? '';
+    const rbProbes = rbRun.body?.probes ?? {};
+    check('config/ruby-execute-really-runs', rbRun.status === 200 && rbOut.includes('NODE-RUBY-PATH-OK'),
+      `status=${rbRun.status} stdout=${JSON.stringify(rbOut.slice(0, 80))}`);
+    check('config/ruby-probes-native-entry', rbProbes.entryKind === 'native-executable;no-wrapper' &&
+      rbProbes.stages === 'run' && rbProbes.runtimePathSource === 'path' &&
+      rbProbes.includePath === '-I.' && rbProbes.lineEndings === 'no-normalization;platform-native' &&
+      /no-enforcement/.test(rbProbes.network ?? ''),
+      `probes=${JSON.stringify(rbProbes).slice(0, 320)}`);
+
+    const rbVer = await rubyExecute('puts RUBY_VERSION');
+    check('config/ruby-version-self-report', (rbVer.body?.run?.stdout ?? '').trim() === ruby.version,
+      `self=${JSON.stringify((rbVer.body?.run?.stdout ?? '').trim())} 期望=${ruby.version}`);
+
+    // ★ 宿主污染是故意造的：没剥干净时这两个变量会被 Ruby 读到，判据才不是恒绿。
+    const rbEnv = await rubyExecute(`puts "RUBYOPT=#{ENV['RUBYOPT'].inspect}|RUBYLIB=#{ENV['RUBYLIB'].inspect}"`);
+    const rbEnvOut = rbEnv.body?.run?.stdout ?? '';
+    check('config/ruby-clean-host-env', /RUBYOPT=nil\|RUBYLIB=nil/.test(rbEnvOut),
+      `stdout=${JSON.stringify(rbEnvOut.slice(0, 120))}（宿主注入 RUBYOPT=-rjson / RUBYLIB）`);
+
+    const rbCn = await rubyExecute('puts "中文标记：昆明"');
+    check('config/ruby-utf8', (rbCn.body?.run?.stdout ?? '').includes('中文标记：昆明'),
+      `stdout=${JSON.stringify((rbCn.body?.run?.stdout ?? '').slice(0, 80))}`);
+
+    const rbStdin = await rubyExecute('puts "STDIN=#{STDIN.gets&.strip}"', 'marker-42\n');
+    check('config/ruby-stdin', (rbStdin.body?.run?.stdout ?? '').includes('marker-42'),
+      `stdout=${JSON.stringify((rbStdin.body?.run?.stdout ?? '').slice(0, 80))}`);
+
+    const rbJson = await rubyExecute('require "json"; puts JSON.generate({ok: true})');
+    check('config/ruby-stdlib-json', (rbJson.body?.run?.stdout ?? '').includes('{"ok":true}'),
+      `stdout=${JSON.stringify((rbJson.body?.run?.stdout ?? '').slice(0, 80))}`);
+
+    // Ruby 1.9+ 把 . 移出 $LOAD_PATH：节点加 -I . 后，附加同目录文件才能 require。
+    const rbReq = await api('/api/v2/execute', {
+      method: 'POST',
+      body: JSON.stringify({
+        language: 'ruby', version: '*',
+        files: [
+          { name: 'main.rb', content: 'require "helper"\nputs "HELPER=#{helper_value}"' },
+          { name: 'helper.rb', content: 'def helper_value\n  42\nend\n' },
+        ],
+        stdin: '', args: [], compile_timeout: 10000, run_timeout: 6000, output_max_size: 65536,
+      }),
+    });
+    check('config/ruby-require-dot', (rbReq.body?.run?.stdout ?? '').includes('HELPER=42'),
+      `stdout=${JSON.stringify((rbReq.body?.run?.stdout ?? '').slice(0, 80))} stderr=${JSON.stringify((rbReq.body?.run?.stderr ?? '').slice(0, 120))}`);
+
+    const rbSock = await rubyExecute('require "socket"; s = TCPServer.new("127.0.0.1", 0); puts "SOCKET-OK"; s.close');
+    check('config/ruby-socket-available', (rbSock.body?.run?.stdout ?? '').includes('SOCKET-OK'),
+      `stdout=${JSON.stringify((rbSock.body?.run?.stdout ?? '').slice(0, 80))}`);
+
+    // ★ 与 Cygwin Perl 的 LF 相反：Windows 原生 Ruby 的 puts/write 会输出 CRLF。
+    //   节点不改写一个字节，判据按解释器自报的风味押「该有的换行」，换 Linux 不误红。
+    const rbCrlf = await rubyExecute('STDOUT.write("A\\nB\\n")');
+    const rbCrlfOut = rbCrlf.body?.run?.stdout ?? '';
+    const windowsRuby = /mingw|mswin/.test(ruby.flavor);
+    check('config/ruby-line-endings-truth',
+      windowsRuby ? rbCrlfOut.includes('A\r\nB\r\n') : rbCrlfOut.includes('A\nB') && !rbCrlfOut.includes('\r'),
+      `flavor=${ruby.flavor} stdout=${JSON.stringify(rbCrlfOut.slice(0, 40))}`);
   }
 
   // ---------- B 坏路径 → 自动置灰 ----------
@@ -383,6 +501,7 @@ async function main() {
       php: { path: '', disabled: true },
       perl: { path: perl.exe, disabled: true },
       r: { path: r.path, disabled: true },
+      ruby: { path: '', disabled: true },
     },
   });
   {
@@ -397,14 +516,18 @@ async function main() {
     check('disabled/r-hidden-despite-config', !list.some((x) => x.language === 'r'),
       `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
     check('disabled/health-says-disabled', /disabled/.test(health.body?.missing?.php ?? '') &&
-      /disabled/.test(health.body?.missing?.perl ?? '') && /disabled/.test(health.body?.missing?.r ?? ''),
+      /disabled/.test(health.body?.missing?.perl ?? '') && /disabled/.test(health.body?.missing?.r ?? '') &&
+      /disabled/.test(health.body?.missing?.ruby ?? ''),
       `missing=${JSON.stringify(health.body?.missing ?? {})}`);
+    // ★ PATH 里明明有 ruby.exe，「关」必须是第一句，不能因为探测得到就重新冒出来。
+    check('disabled/ruby-hidden-despite-path', !list.some((x) => x.language === 'ruby'),
+      `runtimes=${list.map((x) => x.language).join(',') || '空'}`);
   }
 
   // ---------- D 空 path 回退 PATH ----------
   await stopNode();
   await startNode({
-    runtimes: { go: { path: '' }, php: { path: '' }, perl: { path: '' }, r: { path: '' } },
+    runtimes: { go: { path: '' }, php: { path: '' }, perl: { path: '' }, r: { path: '' }, ruby: { path: '' } },
   });
   {
     const rt = await api('/api/v2/runtimes');
@@ -433,6 +556,11 @@ async function main() {
     check('fallback/r-follows-path-truth',
       pathHasR ? !!rFallback && rFallback.source === 'path' : !rFallback,
       `PATH 有 r=${pathHasR} runtimes.r=${JSON.stringify(rFallback ?? null)}`);
+    // Ruby 是「PATH 里真有、且不配任何绝对路径」的正向真值：能力与 source 都照实报。
+    const rubyFallback = list.find((x) => x.language === 'ruby');
+    check('fallback/ruby-follows-path-truth', !!rubyFallback &&
+      rubyFallback.source === 'path' && rubyFallback.version === ruby.version,
+      `runtimes.ruby=${JSON.stringify(rubyFallback ?? null)} 期望 version=${ruby.version}`);
   }
 
   // ---------- E 脚本包装器缺失 → 必须置灰（反证 wrapEntry 不是摆设） ----------

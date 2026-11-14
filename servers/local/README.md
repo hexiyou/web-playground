@@ -16,7 +16,12 @@
 > `wrapEntry`（同目录 `sh.exe <script>` 包装）与 `envFromTool`（干净 PATH/HOME、剥宿主
 > `BASH_FUNC_*` 导出函数）两项能力；`execute()` 仍然零语言分支。
 > **脚本型入口实测与坑清单见 §9** —— 后续要挂任何 shebang wrapper / 便携版 launcher
-> 之前，务必先读 §8 + §9 两节。
+> 之前，务必先读 §8 + §9 + §10 三节。
+>
+> v0.9 变更：接入第十二门语言 **Ruby**（本机是 **RubyInstaller 4.0.9 / x64-mingw-ucrt**）。
+> 与 Perl / R 都不同：入口是**原生 PE 可执行文件、且就在 PATH 里**，`ruby.path` 留空即可，
+> 既不需要 `wrapEntry` 也不需要 `envFromTool`。节点只剥宿主 Ruby/gem 变量，并如实登记
+> Windows 原生 `puts` 的 CRLF（不归一化）。**实测与坑清单见 §10**。
 
 ## 1. 这是什么 / 为什么与官方推荐分叉
 
@@ -161,15 +166,15 @@ CodeMirror → 判据负例），**UI 一行不改**。
 
 | 场景 | 押什么 |
 |---|---|
-| A 配了 `php.path` / `perl.path` / `r.path` | `source === "config"` · `health.config` 指向临时文件且 `missing={}` · 三门 execute 真吐出字节 · `perl.flavor === $^O` / `r.flavor` 来自 `--version` 的 Platform 行且版本一致 · 中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF · **R 的 `entryKind=shell-script;#!/bin/sh` / `wrapper=sh.exe <script>` / stderr 无 `safe-bin` 污染 / 不谎报默认包** · Go 两阶段不回归 |
+| A 配了 `php.path` / `perl.path` / `r.path`，`ruby.path` 留空走 PATH | `source === "config"` · `health.config` 指向临时文件且 `missing={}` · 三门 execute 真吐出字节 · `perl.flavor === $^O` / `r.flavor` 来自 `--version` 的 Platform 行且版本一致 · 中文 UTF-8、Cygwin cwd/分隔符、LF 不转 CRLF · **R 的 `entryKind=shell-script;#!/bin/sh` / `wrapper=sh.exe <script>` / stderr 无 `safe-bin` 污染 / 不谎报默认包** · **Ruby 的 `source=path` / `entryKind=native-executable;no-wrapper` / CRLF 真值 / 宿主 `RUBYOPT` 净化** · Go 两阶段不回归 |
 | B path 指向不存在 | php / perl / r 都从 runtimes 消失 · `health.missing` 说明原因 · 三门 `POST execute` 都明确 400 `runtime is unknown` |
-| C `disabled: true` | PATH 里明明有 php、配置里明明有 perl 与 r，仍不登记（证明「关」优先于探测） |
-| D `path: ""` | php 回退 PATH `source="path"` 且 execute 真跑通；**perl / r 按 PATH 里到底有没有它如实判**（本机都没有 ⇒ 不登记，反证 A 场景全靠配置路径） |
+| C `disabled: true` | PATH 里明明有 php / ruby、配置里明明有 perl 与 r，仍不登记（证明「关」优先于探测） |
+| D `path: ""` | php / ruby 回退 PATH `source="path"` 且 execute 真跑通；**perl / r 按 PATH 里到底有没有它如实判**（本机都没有 ⇒ 不登记，反证 A 场景全靠配置路径） |
 | E 包装器缺失 | 把 R 入口拷到没有 `sh.exe` 的临时目录 ⇒ r 不登记、`health.missing` 明写「脚本包装器不可用」、execute 400。**反证 `wrapEntry` 不是摆设** |
 
-v0.8 共 **46 条**（node 4 · config 24 · badpath 7 · disabled 4 · fallback 4 · wrapper 3；v0.7 是 26 条）。
+v0.9 共 **62 条**（node 6 · config 36 · badpath 7 · disabled 5 · fallback 5 · wrapper 3；v0.8 是 46 条，v0.7 是 26 条）。
 D 场景那条是「手动配置运行时路径」的价值证据：Cygwin Perl / R 都不在 PATH，
-清空 `path` 后能力表必须立刻置灰，不许拿缓存里的旧路径假装还能跑；E 场景是「脚本型入口」
+清空 `path` 后能力表必须立刻置灰，不许拿缓存里的旧路径假装还能跑；Ruby 则是「PATH 直发现」的正向证据（`source=path` 与 `disabled` 优先各有判据）；E 场景是「脚本型入口」
 的价值证据：入口能 `os.Stat` 到 ≠ 能启动，包装器不在就必须置灰。
 
 报告落在 `.node-check-report.json`（不入库）。**真机自检（浏览器 CDP）只证明前端资产零外联，
@@ -191,11 +196,11 @@ D 场景那条是「手动配置运行时路径」的价值证据：Cygwin Perl 
 run_timeout / compile_cpu_time / run_cpu_time / compile_memory_limit /
 run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Piston 由环境变量配置，
 不传则忽略）。`files[].name` 按 Piston 契约只接受**纯文件名**（无路径、无分隔符），
-扩展名按语言白名单：Go 只收 `.go`、PHP 只收 `.php`、Perl 只收 `.pl`；`encoding` 只支持 `utf8`。
-第一个文件是主文件；`name` 为空时按语言补 `main.go` / `main.php` / `main.pl`。
+扩展名按语言白名单：Go 只收 `.go`、PHP 只收 `.php`、Perl 只收 `.pl`、R 只收 `.R/.r`、Ruby 只收 `.rb`；`encoding` 只支持 `utf8`。
+第一个文件是主文件；`name` 为空时按语言补 `main.go` / `main.php` / `main.pl` / `main.R` / `main.rb`。
 
 响应体：`{language, version, run:{...}, compile?:{...}, probes:{...}}`。
-**单阶段语言（PHP / Perl）不带 `compile` 字段**，前端 `mapExecuteResponse()` 走编译缺省分支；
+**单阶段语言（PHP / Perl / R / Ruby）不带 `compile` 字段**，前端 `mapExecuteResponse()` 走编译缺省分支；
 两阶段语言（Go）编译失败时 `compile.status = "RE"`，`run` 是空壳并带 `message`，
 由 `compile.status` 决定总体状态，**不谎报执行过**。
 
@@ -209,7 +214,7 @@ run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Pist
   `buildExecuteBody()` 仍然显式传这些字段，是为了将来切官方 Piston 时行为一致。
 - `probes` 按语言登记：`stages=build+run|run`、`network`（见下）、
   `runtimePathSource=config|path`、`runtimeVersion`、可选的 `runtimeFlavor`（`flavorRe`
-  配了才写）、Perl 的 `flavorFrom=$^O` / `includePath=-I.`、`encoding=utf8-only`。
+  配了才写）、Perl 的 `flavorFrom=$^O` / `includePath=-I.`、Ruby 的 `entryKind=native-executable;no-wrapper` / `lineEndings=no-normalization;platform-native`、`encoding=utf8-only`。
 
 **各语言的零外联口径（别混）**：
 
@@ -218,6 +223,7 @@ run_memory_limit`，另加 A′ 扩展字段 **`output_max_size`**（官方 Pist
 | Go | `GOPROXY=off / GOTOOLCHAIN=local / GOSUMDB=off / GOWORK=off` 只管编译期拉包 | 用户代码里的 `net/http` 可直连 |
 | PHP | `-d allow_url_fopen=0 -d allow_url_include=0` 关 URL 包装器；`php.ini` 用宿主机默认 | `curl` / `sockets` / `stream_socket_client` 扩展仍可直连 |
 | Perl | **没有任何禁网措施**：只剥掉宿主的 `PERL5LIB` / `PERL5OPT` / `PERLLIB` / `PERL_LOCAL_LIB_ROOT` / `PERL_MM_OPT`，避免把本机模块带进执行环境 | `IO::Socket::INET` / `LWP` / `system()` / `fork()` 全可用；Cygwin 有完整 socket 栈，`probes.network=no-enforcement;IO::Socket-available` |
+| Ruby | **没有任何禁网措施**：保留 PATH，只剥宿主 `RUBYOPT` / `RUBYLIB` / `RUBYPATH` / `GEM_*` / `BUNDLE_*` | `TCPServer` / `Net::HTTP` / `system()` 全可用，`probes.network=no-enforcement;TCPServer-available` |
 
 ⇒ **A′ 没有网络隔离**，这是「只跑可信代码」的又一条理由。别把 `-d allow_url_fopen=0`
 当成沙箱。PHP 语法错误走 `display_errors=stderr` 进 stderr，进程退出码非零但
@@ -280,7 +286,7 @@ stderr + `exitCode`，不要押 `status=error`。
    <lang>=<version>` 把预编译包放进 `/piston/packages` volume，宿主机不用装解释器，
    但**动作本身没省**，compose 也不会自动装，且容器重建/无状态部署会清零。
 
-## 7. 加下一门语言（Ruby / Java / WSL…）
+## 7. 加下一门语言（Java / WSL…）
 
 节点侧：**在 `builtinSpecs()` 加一条 spec**（§3.3），必要时在 `runtimes.json` 加一条
 `{ "path": "" }`；本机装好解释器，或在 `runtimes.local.json` 指到便携式路径。
@@ -462,3 +468,88 @@ Windows 风格路径参数也单独验过：`C:\...\main.pl`、`C:/.../main.pl`�
    **不要**把 `EXPECTED_RED` 放宽成「允许偶发红」，也不要为了跑绿去抬高
    `DEFAULT_LIMITS.wallMs` —— 前者掩盖抖动，后者把用户代码预算和宿主机开销混为一谈。
    这与「超时判据只押 `status=TO`、不押毫秒数」是同一条口径的两面。
+
+
+## 10. Ruby 4.0.9 实测报告（v0.9 · 原生 PE / 纯 PATH 探测，接下一门原生运行时前先读）
+
+何工这一门的定位是「本机 Windows 已安装最新版本 Ruby，PATH 下应当能发现解释器」。
+**「应当」要实测**：本机确实是 RubyInstaller2 的 UCRT 版原生 PE，第一次出现
+「既不是 WASM、也不在 PATH 之外、也不是 shebang 脚本」的运行时，正好用来反证
+§8 / §9 的通用钩子不是给 Cygwin 特设的后门。
+
+### 10.1 环境与接法
+
+| 项 | 实测值 |
+|---|---|
+| 安装 | RubyInstaller2 `C:\Ruby40-x64\bin\ruby.exe`，PATH 里 `/c/Ruby40-x64/bin/ruby` |
+| 版本自报 | `ruby 4.0.9 (2026-10-23 revision 3e93b23afc) +PRISM [x64-mingw-ucrt]` |
+| `RUBY_PLATFORM` / `Encoding.default_external` | `x64-mingw-ucrt` / `UTF-8` |
+| 入口形态 | 33792 B，头两字节 `MZ` ⇒ **原生 PE**；同目录没有 `sh.exe`（`rubyw.exe` 存在） |
+| 配置 | `runtimes.json` 里 `"ruby": { "path": "", "disabled": false }`，**留空走 `exec.LookPath("ruby")`** |
+| 探测 | `ruby --version` 一次拿版本与风味；`flavorRe` 从 `[x64-mingw-ucrt]` 解析出 `mingw` |
+| 执行 | `ruby -I . main.rb`（单阶段，响应不带 `compile` 字段） |
+| 环境 | **保留 PATH**；剥 `RUBYOPT / RUBYLIB / RUBYPATH / GEM_HOME / GEM_PATH / GEMRC / BUNDLE_*` |
+| 判据 | 节点新增 16 条（`node/*` 2 + `config/ruby-*` 12 + `disabled/*` 1 + `fallback/*` 1）+ 真机 18 条 `ruby/*` + `sample/ruby` |
+
+### 10.2 实测表（Python 子进程 → 节点 HTTP → 浏览器真机，三层全部通过）
+
+| # | 项 | 结果 |
+|---|---|---|
+| 1 | `where ruby` / `command -v ruby` | `C:\Ruby40-x64\bin\ruby.exe` / `/c/Ruby40-x64/bin/ruby` |
+| 2 | 直接 exec `--version` | rc=0，一行出版本与 platform（**无需包装器**） |
+| 3 | `GET /api/v2/runtimes` | `ruby 4.0.9` / `aliases=[rb,ruby4]` / `source=path` / `flavor=mingw` |
+| 4 | `POST /api/v2/execute` | 200，`run.stdout` 有字节、`code=0`、无 `compile` 字段 |
+| 5 | 中文源码 + 中文 stdin（写文件 + bytes） | `puts "中文标记：昆明"` 与 `STDIN.gets` 都按 UTF-8 往返 |
+| 6 | `$stdout.external_encoding` | 空；`Encoding.default_external=UTF-8`，`__ENCODING__=UTF-8` |
+| 7 | `STDOUT.write("A\nB\n")` → 文件 stdout | `A\r\nB\r\n`；**管道 stdout 同样 CRLF** |
+| 8 | `require 'json'` / `'openssl'` | 均成功（`{"a":1}` / `4.0.2`），标准库可用 |
+| 9 | `require 'helper'`（同目录附加文件） | **LoadError**；`require_relative 'helper'` 与 `ruby -I .` 都成功 |
+| 10 | `TCPServer.new('127.0.0.1', 0)` | 可监听，`probes.network=no-enforcement;TCPServer-available` |
+| 11 | 语法错误 `def x(` | rc=1，PRISM 详细诊断进 stderr，stdout 空 |
+| 12 | 宿主注入 `RUBYOPT=-rjson` / `RUBYLIB=<tmp>` | 节点剥掉后 Ruby 自报 `RUBYOPT=nil` 与 `RUBYLIB=nil` |
+| 13 | `disabled: true` 且 PATH 有 ruby | 不登记，`health.missing.ruby` 明写 disabled |
+| 14 | 空 path 回退 | `source=path` 且版本与 `--version` 一致 |
+
+### 10.3 坑清单（★ = 已做成可执行判据）
+
+1. ★ **入口形态是配置，不是常识**：R 是 shebang 脚本要 `sh.exe` 包装，Ruby 是 PE 直接 exec；
+   同一张 `builtinSpecs()` 表用 `wrapEntry` 的「有 / 无」表达，别给原生语言硬套包装器，
+   也别假设「装了就能 exec」。`node/ruby-entry-is-native` 读文件头，
+   `config/ruby-probes-native-entry` 押 `entryKind=native-executable;no-wrapper`。
+2. ★ **Windows 原生 Ruby 输出 CRLF**：`puts` 与 `STDOUT.write` 都把 `\n` 转成 `\r\n`
+   （管道与文件 stdout 均如此），与 Cygwin Perl / R 的 LF 相反。节点**不归一化**：
+   同一份字节若被改写，用户显式写出的 `\r\n` 会被毁掉。
+   `probes.lineEndings=no-normalization;platform-native`，真机 `ruby/crlf` 按解释器自报的
+   flavor 押「该有的换行」，换 Linux 不误红 —— **判据别押死 CRLF**。
+3. ★ **`-I .` 不是可选优化**：Ruby 1.9+ 把 `.` 移出 `$LOAD_PATH`，`require 'helper'` 会
+   LoadError；不加就与 Go / PHP / Perl 的「附加文件同目录」语义不一致。
+   `require_relative` 本来就可用，两条都做成判据（`ruby/multi-file` / `ruby/require-relative`）。
+4. ★ **宿主 Ruby 变量是隐藏输入**：`RUBYOPT`（启动期 `-r` 自动加载）、`RUBYLIB` / `GEM_*` /
+   `BUNDLE_*` 会把本机 gem 与自动加载带进执行环境。对照 §9 的 `BASH_FUNC_*` 教训，
+   **原生运行时不能重建 PATH**（Ruby 靠它找 DLL 与子进程）⇒ 只剥 Ruby 专属变量。
+   判据必须**故意注入**才有意义：`check:node` 的 A 场景用
+   `startNode(config, { RUBYOPT: '-rjson', RUBYLIB: tmpdir() })`，再让 Ruby 自报 `ENV`。
+5. ★ **PATH 发现也要有反证**：`source=path` 不能只靠一次绿灯，`disabled:true` 必须压过
+   PATH 探测（坑 108「关必须是第一句」），空 path 回退也必须照实报。
+   `disabled/ruby-hidden-despite-path` / `fallback/ruby-follows-path-truth`。
+6. **第三方 gem 不承诺**：本机标准库 json / openssl 可用，但 gem 集随机器安装变化，
+   A′ 无可复现性。默认示例刻意只用标准库，`sample/ruby` 判据直接跑 `SAMPLES` 原文；
+   别在示例里 `require` 任何第三方 gem。
+
+### 10.4 对后续工作的可复用结论
+
+1. **「入口形态」当一等配置**：PE / ELF / shebang / `.cmd` / `.bat` 是五种不同的东西。
+   探测与执行必须共用同一份启动计划（§9.4 结论 2 在这里再次成立：Ruby 没有 wrap，
+   但 env 仍与探测共用 `stageEnv`）。
+2. **净化策略按运行时分档**：非原生 POSIX（Cygwin / MSYS2）白名单重建环境；
+   原生 Windows 运行时保留 PATH、只剥语言专属变量。别把任一档的做法无差别套到另一档。
+3. **平台差异如实登记，别用开关抹平**：CRLF / LF、`$LOAD_PATH`、默认包可用性都是宿主事实；
+   节点负责「不改写字节 + 登记 `probes`」，判据负责「按解释器自报押真值」，UI 不做归一化。
+4. **负载抖动随判据数变多**：v0.9 真机判据 157 条，十组真机负例串行十四分钟里
+   第 1 组（拆 iframe）与第 10 组（拆 Ruby）各多红一条 `go/output-limit`，
+   FAIL 明细都是 `status=timeout`；单独复跑分别精确通过 12 / 20 条。
+   处置同 §9.4 第 6 条：**不放宽 `EXPECTED_RED`、不抬 `DEFAULT_LIMITS.wallMs`**。
+5. **三处防返工接缝一处没动**：`createRegistry(getMount, serverRunners)` 注入实例、
+   `trust` 由 Runner 自报、后端专有语言名在 `PISTON_LANGUAGES` / `LOCAL_LANGUAGES`。
+   Ruby 只是 `builtinSpecs()` 里多一条 spec + 前端固定五步，回切官方 Docker + Piston
+   时前端一行不改。

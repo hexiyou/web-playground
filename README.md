@@ -2,11 +2,11 @@
 
 浏览器里写代码、点「运行」直接看结果的多语言代码片段验证台。**团队内部小范围使用**，目标是免配环境验证代码片段，不承担判分、不承载不可信代码。
 
-当前 **v0.8 · 11 门语言**：浏览器原生 4 门 + WASM 3 门 + 仅服务端 4 门。契约先行，执行后端可插拔，**能力表由 Runner 注册表推导**，没接线的语言一律置灰。
+当前 **v0.9 · 12 门语言**：浏览器原生 4 门 + WASM 3 门 + 仅服务端 5 门。契约先行，执行后端可插拔，**能力表由 Runner 注册表推导**，没接线的语言一律置灰。
 
-![Playground 界面：代码编辑、运行输出与 11 门语言的接线真值表](docs/ui-screenshot.png)
+![Playground 界面：代码编辑、运行输出与 12 门语言的接线真值表](docs/ui-screenshot.png)
 
-> 截图取自 v0.8 dev 真机（非设计稿）：默认 JavaScript 示例在 Worker 里跑出输出，下方能力表如实显示每一门的载体、位置、隔离档与信任档。
+> 截图取自 v0.9 dev 真机（非设计稿）：默认 JavaScript 示例在 Worker 里跑出输出，下方能力表如实显示每一门的载体、位置、隔离档与信任档。
 
 ## 一眼看懂
 
@@ -29,7 +29,7 @@ npm install                 # postinstall 会把 Pyodide 资产同步到 public/
 npm run dev                 # http://127.0.0.1:5173/
 ```
 
-只用浏览器原生 / WASM 语言，到这一步就够了。要用 Go / PHP / Perl / R，另开一个终端：
+只用浏览器原生 / WASM 语言，到这一步就够了。要用 Go / PHP / Perl / R / Ruby，另开一个终端：
 
 ```bash
 npm run server              # A′ 节点，默认 127.0.0.1:2000，token=pg-local-dev-token
@@ -38,6 +38,8 @@ npm run server              # A′ 节点，默认 127.0.0.1:2000，token=pg-loc
 前端默认连这个地址；换端口或口令用 `?server=<url>&token=<token>` 覆盖。`Ctrl+Enter` 运行，工具栏可切语言 / 载体 / 位置 / 超时。
 
 服务端语言的**宿主前置**：解释器要在 PATH 里，或在 `servers/local/runtimes.local.json`（本机覆盖、不入库）里写绝对路径；节点每次启动真探测 `GET /api/v2/runtimes`，探测不到就不登记、能力表立刻置灰。入库模板是 `servers/local/runtimes.json`。
+
+Ruby 是「PATH 直发现」的正面样本：本机 RubyInstaller 的 `ruby.exe` 是原生 PE（不是 Cygwin 脚本），`path` 留空即可，节点回报 `source=path`；Perl / R 则必须配绝对路径。
 
 ## 语言矩阵
 
@@ -52,8 +54,9 @@ npm run server              # A′ 节点，默认 127.0.0.1:2000，token=pg-loc
 | | PHP | `local.process.v1` | server | 单阶段，响应不带 `compile` 字段 |
 | | Perl 5.32（Cygwin） | `local.process.v1` | server | 单阶段；本机不在 PATH，靠配置 `path` 挂入 |
 | | R 4.2.1（Cygwin） | `local.process.v1` | server | 单阶段；入口是 shell 脚本，由同目录 `sh.exe` 包装 |
+| | Ruby 4.0.9（RubyInstaller UCRT） | `local.process.v1` | server | 单阶段 `-I . main.rb`；PATH 直接发现，原生 PE 无需包装 |
 
-`flavor`（如 `cygwin`）由运行时自报、动态探测，不硬编码。Go / PHP / Perl / R 的解释器与节点**一字节都不进前端产物**：v0.8 首屏 JS 17.57 KiB + CSS 1.59 KiB = **19.17 KiB**（`gzip -9` / 1024 口径）。
+`flavor`（如 `cygwin` / `mingw`）由运行时自报、动态探测，不硬编码。Go / PHP / Perl / R / Ruby 的解释器与节点**一字节都不进前端产物**：v0.9 首屏 JS 18.18 KiB + CSS 1.59 KiB = **19.77 KiB**（比 v0.8 +0.60 KiB，`gzip -9` / 1024 口径），切到 Ruby 编辑器才下 **2.11 KiB** 的语法包。
 
 ## 架构骨架
 
@@ -98,7 +101,7 @@ A′ 实现的是 `GET /api/v2/runtimes` + `POST /api/v2/execute` 的 Piston v2 
 
 `npm run smoke` 会自动拉起或复用 A′ 节点，并在结束时按「是否由本次拉起」决定是否关闭。
 
-**v0.8 基线**：单测 **93** · 真机 dev / dist 各 **138 条（136 绿 / 2 条记账跳过）** · 节点判据 **46** · **17 组拆线负例全精确** · CDP 抓包 dev 同源 55（`/pyodide/` 4 + `/api/v2/` 2）/ dist 同源 14 / 外部 **0** · `gofmt` / `go vet` 干净。
+**v0.9 基线**：单测 **101** · 真机 dev / dist 各 **157 条（155 绿 / 2 条记账跳过）** · 节点判据 **62** · **19 组拆线负例全精确** · CDP 抓包 dev 同源 55 / dist 同源 12～20、外部均 **0**（同源条数随缓存与构建波动，v0.8 曾记 14）· `gofmt` / `go vet` 干净。
 
 判据纪律只记三条：押**可观察副作用与可计数的量**；`sample/*` 必须直接跑 `SAMPLES` 默认原文；负例按**红 id 集合 + 相对通过数**比对（押绝对数量，加一门语言老负例必然误报）。
 
@@ -118,11 +121,11 @@ A′ 实现的是 `GET /api/v2/runtimes` + `POST /api/v2/execute` 的 Piston v2 
 | `src/core/contract.ts` | 契约唯一真值 |
 | `index.html`（折叠说明） | 版本范围、逐语言口径、验收与体积基线 |
 | `playground-architecture-analysis.html` | 选型、体积 / 资源账、第十三章 A′ 决策分叉与回切清单 |
-| `servers/local/README.md` | A′ 节点手册：接口、运行时路径配置、动态探测、Cygwin 实测与踩坑清单（§8 / §9） |
+| `servers/local/README.md` | A′ 节点手册：接口、运行时路径配置、动态探测、Cygwin / Ruby 实测与踩坑清单（§8 / §9 / §10） |
 | `servers/local/runtimes.json` | 运行时路径配置入库模板 |
 
-> 踩坑记录与逐项实测数据刻意不收进本文件，全部留在节点手册 §8 / §9 与架构手册，避免门面文档随时间失真。
+> 踩坑记录与逐项实测数据刻意不收进本文件，全部留在节点手册 §8 / §9 / §10 与架构手册，避免门面文档随时间失真。
 
 ---
 
-v0.1 四门浏览器原生 → v0.2 Lua → v0.3 SQL → v0.4 Python → v0.5 A′ + Go → v0.6 规格表 / 动态探测 + PHP → v0.7 Cygwin Perl → **v0.8 Cygwin R（`1df7d43`）**。新语言按门接入、每门独立验收。
+v0.1 四门浏览器原生 → v0.2 Lua → v0.3 SQL → v0.4 Python → v0.5 A′ + Go → v0.6 规格表 / 动态探测 + PHP → v0.7 Cygwin Perl → v0.8 Cygwin R（`1df7d43`）→ **v0.9 Ruby（PATH 直发现的本机原生运行时）**。新语言按门接入、每门独立验收。

@@ -1,5 +1,5 @@
 /**
- * Perl / A′ 单测层拆线负例：把 local.process.v1 的 languages 里的 perl 摘掉（保留 go / php / r）。
+ * Perl / A′ 单测层拆线负例：把 local.process.v1 的 languages 里的 perl 摘掉（保留 go / php / r / ruby）。
  * 期望精确红「接线声明 + 档位推导 + 经 execute 的连线层」三条，其余单测保持绿；
  * finally 无条件恢复源文件。
  *
@@ -15,8 +15,8 @@ const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const vitestBin = join(root, 'node_modules', 'vitest', 'vitest.mjs');
 const report = join(root, '.negative-perl-report.json');
 
-const NEEDLE = "    languages: ['go', 'php', 'perl', 'r'],";
-const BROKEN = "    languages: ['go', 'php', 'r'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl', 'r', 'ruby'],";
+const BROKEN = "    languages: ['go', 'php', 'r', 'ruby'],";
 
 const EXPECTED_RED = [
   'Runner 同时接线 go / php / perl，档位仍是 process-only / advisory',

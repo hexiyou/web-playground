@@ -3,6 +3,7 @@
     "go": { "path": "", "disabled": false },
     "php": { "path": "", "disabled": false },
     "perl": { "path": "", "disabled": false },
-    "r": { "path": "", "disabled": false }
+    "r": { "path": "", "disabled": false },
+    "ruby": { "path": "", "disabled": false }
   }
 }

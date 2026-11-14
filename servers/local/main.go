@@ -371,6 +371,44 @@ func builtinSpecs() []*runtimeSpec {
 				return execPlan{name: tool, argv: argv, tag: "run", wrap: cygwinShellWrap(tool)}
 			},
 		},
+		{
+			language: "ruby",
+			aliases:  []string{"rb", "ruby4"},
+			execName: "ruby",
+			// --version 一行里同时带版本与宿主风味：
+			//   ruby 4.0.9 (2026-10-23 …) +PRISM [x64-mingw-ucrt]
+			// Linux [x86_64-linux] / macOS [arm64-darwin22] / Cygwin [x86_64-cygwin] 同样命中，
+			// 风味由解释器自报，不硬编码「本机是 mingw」。
+			detectArgs: []string{"--version"},
+			versionRe:  regexp.MustCompile(`ruby ([0-9]+\.[0-9]+\.[0-9]+)`),
+			flavorRe:   regexp.MustCompile(`(?i)\[(?:x86_64|x64|i386|arm64|aarch64)[-_](mingw|mswin|cygwin|linux|darwin)`),
+			extensions: []string{".rb"},
+			entryName:  "main.rb",
+			// ★ 入口形态的另一极：RubyInstaller 的 ruby.exe 是原生 PE（不是 #!/bin/sh 脚本），
+			// 既不需要 wrapEntry 也不需要 envFromTool；PATH 必须保留（Ruby 靠它找 DLL / 子进程）。
+			// 只剥宿主的启动选项与 gem 路径，免得把机器上装的 gem 悄悄带进执行环境。
+			envStrip: []string{
+				"RUBYOPT", "RUBYLIB", "RUBYPATH", "GEM_HOME", "GEM_PATH", "GEMRC",
+				"BUNDLE_GEMFILE", "BUNDLE_PATH", "BUNDLE_APP_CONFIG", "BUNDLER_VERSION",
+			},
+			probeExtra: map[string]string{
+				"stages":      "run",
+				"entryKind":   "native-executable;no-wrapper",
+				"network":     "no-enforcement;TCPServer-available",
+				"flavorFrom":  "ruby --version / [platform]",
+				"includePath": "-I.",
+				// 节点不改写一个字节：Windows 原生 Ruby 的 puts 输出 CRLF，Cygwin Perl 输出 LF，
+				// 都如实回传，不在生成端归一化（归一化会毁掉用户显式写出的 \r\n）。
+				"lineEndings": "no-normalization;platform-native",
+			},
+			run: func(dir, exeName, entry, tool string, args []string) execPlan {
+				// Ruby 1.9+ 把 . 移出 $LOAD_PATH：-I . 让「附加 .rb 文件同目录」与
+				// Go / PHP / Perl 语义一致（require_relative 本来就可用，这里补齐 require）。
+				argv := []string{"-I", ".", entry}
+				argv = append(argv, args...)
+				return execPlan{name: tool, argv: argv, tag: "run"}
+			},
+		},
 	}
 }
 

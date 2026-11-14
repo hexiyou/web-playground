@@ -36,6 +36,7 @@ export const LOCAL_LANGUAGES: ServerLanguageMap = Object.freeze({
   php: 'php',
   perl: 'perl',
   r: 'r',
+  ruby: 'ruby',
 });
 
 export interface LocalConfig {
@@ -104,7 +105,7 @@ export function createLocalRunner(cfg: LocalConfig): Runner {
   return {
     id: 'local.process.v1',
     target: 'server',
-    languages: ['go', 'php', 'perl', 'r'],
+    languages: ['go', 'php', 'perl', 'r', 'ruby'],
     enabled: cfg.enabled ?? true,
     // ★ 如实登记：只有进程级限额，结果不可用于判分；不能因为 target=server 就冒充可信。
     isolation: 'process-only',

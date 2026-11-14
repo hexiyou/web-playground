@@ -48,6 +48,7 @@ const FILE_NAMES: Record<LangId, string> = {
   php: 'main.php',
   perl: 'main.pl',
   r: 'main.R',
+  ruby: 'main.rb',
 };
 
 function fileName(lang: LangId): string {
@@ -867,6 +868,136 @@ SELECT city, SUM(n) AS total FROM t GROUP BY city ORDER BY total DESC;`);
     const escapeSrcR = 'cat(1);';
     r = await run('r', escapeSrcR, { files: [{ name: '../evil.R', content: escapeSrcR }] });
     pass('r/path-escape', 'r', '文件名路径逃逸被节点拒绝',
+      r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
+      `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+  }
+
+  // ---------- Ruby（A′ 本机进程执行节点 · Windows 原生 PE · 纯 PATH 探测 · 仅 server） ----------
+  // 与 R 正好是入口形态的两极：RubyInstaller 的 ruby.exe 不需要 sh.exe 包装，也不重建 PATH。
+  // 这里把 v0.9 实测到的三条差异做成可执行证据：PATH 发现且 source=path、
+  // Windows 原生 puts 的 CRLF 如实回传（节点不归一化）、-I . 让同目录 require 可用。
+  // ★ 风味 / 版本一律让解释器自报，不硬编码 4.0.9 或 mingw；换行也按风味押，换 Linux 不误红。
+  {
+    const rubyCap = capabilityFor(caps, 'ruby');
+    pass('ruby/wiring', 'ruby', 'Ruby 只有 server 位置且不可判分',
+      rubyCap.available && rubyCap.targets.length === 1 && rubyCap.targets[0] === 'server' &&
+        rubyCap.prefer === 'server' && !rubyCap.trusted && rubyCap.trust === 'advisory' &&
+        rubyCap.isolation.includes('process-only'),
+      `targets=${rubyCap.targets.join('/')} trust=${rubyCap.trust} isolation=${rubyCap.isolation.join('/')}`);
+
+    let r = await run('ruby', 'puts "RUBY-STDOUT-MARK";');
+    pass('ruby/stdout', 'ruby', 'PATH 探测到的 Ruby stdout 回显',
+      r.status === 'ok' && text(r).includes('RUBY-STDOUT-MARK'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+    pass('ruby/capability', 'ruby', '原生入口 / 单阶段 / PATH 来源 / 不归一化换行 / 无内存谎报',
+      r.target === 'server' && r.engine === 'local.process.v1' &&
+        r.probes?.stages === 'run' &&
+        r.probes?.entryKind === 'native-executable;no-wrapper' &&
+        r.probes?.runtimePathSource === 'path' &&
+        r.probes?.lineEndings === 'no-normalization;platform-native' &&
+        r.probes?.includePath === '-I.' &&
+        typeof r.probes?.runtimeVersion === 'string' && r.probes.runtimeVersion.length > 0 &&
+        typeof r.probes?.runtimeFlavor === 'string' && r.probes.runtimeFlavor.length > 0 &&
+        /no-enforcement/.test(r.probes?.network ?? '') &&
+        r.probes?.memoryCapability === 'no-memory-cap' && r.usage?.memoryBytes === undefined,
+      `probes=${JSON.stringify(r.probes ?? {}).slice(0, 280)}`);
+
+    const rubyFlavor = String(r.probes?.runtimeFlavor ?? '');
+    const windowsRuby = /mingw|mswin/.test(rubyFlavor);
+
+    r = await run('ruby', 'puts RUBY_PLATFORM;');
+    pass('ruby/flavor', 'ruby', 'runtimeFlavor 与解释器自报 RUBY_PLATFORM 一致（不硬编码宿主）',
+      r.status === 'ok' && text(r).trim().includes(rubyFlavor),
+      `flavor=${rubyFlavor} self=${text(r).trim().slice(0, 60)}`);
+
+    r = await run('ruby', 'puts RUBY_VERSION;');
+    pass('ruby/version', 'ruby', 'runtimes 动态探测的版本与 RUBY_VERSION 自报一致',
+      r.status === 'ok' && text(r).includes(String(r.probes?.runtimeVersion ?? '不可能匹配')),
+      `reported=${r.probes?.runtimeVersion ?? '无'} self=${text(r).trim().slice(0, 40)}`);
+
+    r = await run('ruby', 'puts "STDIN=#{(STDIN.gets || "").strip}";', { stdin: 'marker-42' });
+    pass('ruby/stdin', 'ruby', 'stdin 注入并读回',
+      r.status === 'ok' && text(r).includes('STDIN=marker-42'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('ruby', '$stderr.puts "RUBY-STDERR-MARK"; exit 2;');
+    pass('ruby/stderr', 'ruby', 'stderr 与真实退出码',
+      hasStderr(r) && text(r).includes('RUBY-STDERR-MARK') && r.exitCode === 2,
+      `status=${r.status} exitCode=${r.exitCode} out=${text(r).slice(0, 100)}`);
+
+    r = await run('ruby', 'puts "中文标记：昆明";');
+    pass('ruby/utf8', 'ruby', '中文 UTF-8 往返（源码写文件，不走 shell argv）',
+      r.status === 'ok' && text(r).includes('中文标记：昆明'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    const requireSrc = 'require "helper"; puts "HELPER=#{helper_value}";';
+    r = await run('ruby', requireSrc, {
+      files: [
+        { name: 'main.rb', content: requireSrc },
+        { name: 'helper.rb', content: 'def helper_value\n  42\nend\n' },
+      ],
+    });
+    pass('ruby/multi-file', 'ruby', '附加 .rb 文件同目录可 require（节点 -I . 生效）',
+      r.status === 'ok' && text(r).includes('HELPER=42'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    const relativeSrc = 'require_relative "helper"; puts "REL=#{helper_value}";';
+    r = await run('ruby', relativeSrc, {
+      files: [
+        { name: 'main.rb', content: relativeSrc },
+        { name: 'helper.rb', content: 'def helper_value\n  42\nend\n' },
+      ],
+    });
+    pass('ruby/require-relative', 'ruby', 'require_relative 同样可用（Ruby 原生惯用写法）',
+      r.status === 'ok' && text(r).includes('REL=42'),
+      `status=${r.status} out=${text(r).slice(0, 120)}`);
+
+    r = await run('ruby', 'puts "platform=#{RUBY_PLATFORM}"; puts "wd=#{Dir.pwd}";');
+    const outRuby = text(r);
+    const winOk = /platform=\s*\S/.test(outRuby) && /wd=\s*[A-Za-z]:/.test(outRuby);
+    const genericOk = /platform=\s*\S/.test(outRuby) && /wd=\s*\S/.test(outRuby);
+    pass('ruby/host-semantics', 'ruby', '宿主风味对应的路径语义（mingw 盘符路径 / 其它平台绝对路径）',
+      r.status === 'ok' && (windowsRuby ? winOk : genericOk),
+      `flavor=${rubyFlavor} out=${outRuby.replace(/\n/g, ' | ').slice(0, 180)}`);
+
+    // ★ 与 Cygwin Perl / R 的 LF 相反：Windows 原生 Ruby 把 \n 写成 CRLF。
+    //   节点不改写一个字节（归一化会毁掉用户显式写出的 \r\n），判据按风味押「该有的换行」。
+    r = await run('ruby', 'STDOUT.write("A\\nB\\n");');
+    pass('ruby/crlf', 'ruby', '换行按平台真值回传，节点不归一化',
+      r.status === 'ok' && (windowsRuby
+        ? text(r).includes('A\r\nB') : text(r).includes('A\nB') && !text(r).includes('\r')),
+      `flavor=${rubyFlavor} out=${JSON.stringify(text(r)).slice(0, 90)}`);
+
+    r = await run('ruby', 'require "json"; puts JSON.generate({ok: true});');
+    pass('ruby/stdlib-json', 'ruby', '标准库 json 可用（第三方 gem 不承诺）',
+      r.status === 'ok' && text(r).includes('{"ok":true}'),
+      `status=${r.status} out=${text(r).slice(0, 100)}`);
+
+    r = await run('ruby', 'require "socket"; s = TCPServer.new("127.0.0.1", 0); puts "SOCKET-OK"; s.close;');
+    pass('ruby/socket', 'ruby', 'socket 可监听 ⇒ 如实登记「无内核级禁网」',
+      r.status === 'ok' && text(r).includes('SOCKET-OK') && /no-enforcement/.test(r.probes?.network ?? ''),
+      `status=${r.status} out=${text(r).slice(0, 80)} probes.network=${r.probes?.network ?? '无'}`);
+
+    r = await run('ruby', 'def x(');
+    pass('ruby/syntax-error', 'ruby', '语法错误进 stderr 且带非零退出码',
+      hasStderr(r) && /(syntax|Unmatched)/i.test(text(r)) && r.exitCode !== 0 && r.exitCode !== null,
+      `status=${r.status} exitCode=${r.exitCode} out=${text(r).slice(0, 140)}`);
+
+    // 判据只押 status=TO，不押毫秒数（本机 Windows 满 CPU 时进程回收可能慢几秒）。
+    r = await run('ruby', 'sleep 30;', { wallMs: 1500 });
+    pass('ruby/timeout', 'ruby', '墙钟超时被终止并回报 TO',
+      r.status === 'timeout' && r.timedOut &&
+        r.diagnostics.some((d) => /TO|超时|终止/.test(d.message)),
+      `status=${r.status} timedOut=${r.timedOut} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
+
+    r = await run('ruby', '4000.times { puts "012345678901234567890123456789" }', { outputBytes: 512 });
+    pass('ruby/output-limit', 'ruby', '输出字节限额生效',
+      r.status === 'output-limit' && text(r).length <= 512 + 64,
+      `status=${r.status} bytes=${text(r).length}`);
+
+    const escapeSrcRuby = 'puts 1;';
+    r = await run('ruby', escapeSrcRuby, { files: [{ name: '../evil.rb', content: escapeSrcRuby }] });
+    pass('ruby/path-escape', 'ruby', '文件名路径逃逸被节点拒绝',
       r.status === 'unavailable' && r.diagnostics.some((d) => /非法/.test(d.message)),
       `status=${r.status} diag=${r.diagnostics.map((d) => d.message).slice(0, 1).join('')}`);
   }

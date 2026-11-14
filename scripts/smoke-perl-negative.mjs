@@ -1,5 +1,5 @@
 /**
- * Perl / A′ 真机层拆线负例：把 local.process.v1 声明的语言摘到只剩 go + php + r。
+ * Perl / A′ 真机层拆线负例：把 local.process.v1 声明的语言摘掉 perl（保留 go + php + r + ruby）。
  * 期望全局接线门控 + 全部 Perl 判据（含 Cygwin 语义四条）+ sample/perl 精确红，
  * Go / PHP / 浏览器语言判据全绿，2 条记账跳过不动。finally 无条件恢复源文件。
  */
@@ -12,8 +12,8 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const target = join(root, 'src', 'runners', 'server', 'local.ts');
 const reportFile = join(root, '.smoke-perl-report.json');
 
-const NEEDLE = "    languages: ['go', 'php', 'perl', 'r'],";
-const BROKEN = "    languages: ['go', 'php', 'r'],";
+const NEEDLE = "    languages: ['go', 'php', 'perl', 'r', 'ruby'],";
+const BROKEN = "    languages: ['go', 'php', 'r', 'ruby'],";
 
 const EXPECTED_RED = [
   'global/wiring',

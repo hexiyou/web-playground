@@ -120,6 +120,19 @@ export const LANG_DEFS: readonly LangDef[] = Object.freeze([
       '宿主缺 cyglapack-0.dll 时 stats 不可用，stderr 如实告警不掩盖',
     ],
   },
+  {
+    lang: 'ruby',
+    label: 'Ruby',
+    extensions: ['rb'],
+    browserSandbox: 'worker',
+    switchable: [],
+    nativeApis: [
+      '（仅服务端执行）',
+      'RubyInstaller 4.0 · 原生 PE 入口，PATH 直接发现，不需要 sh.exe 包装',
+      '单阶段 ruby -I . main.rb；风味由 --version 的 [platform] 动态探测',
+      'Windows 原生 puts 输出 CRLF，节点不归一化；标准库可用，第三方 gem 随机器',
+    ],
+  },
 ]);
 
 export function langDef(lang: LangId): LangDef {

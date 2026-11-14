@@ -1,7 +1,7 @@
 /**
  * 服务端真机层拆线负例：把 main.ts 里注入的本地执行节点 Runner 摘掉。
- * v0.8 起 A′ 同时承载 Go / PHP / Perl / R，所以这一刀会让**四门服务端语言一起红**；
- * 期望 Go / PHP 全部判据 + 全局接线门控精确红，其余浏览器语言判据全绿、
+ * v0.9 起 A′ 同时承载 Go / PHP / Perl / R / Ruby，所以这一刀会让**五门服务端语言一起红**；
+ * 期望五门服务端全部判据 + 全局接线门控精确红，其余浏览器语言判据全绿、
  * 2 条记账跳过不动。想只拆一门请用 smoke:negative:php。
  *
  * 这条负例专门治「单元判据对没接线天生免疫」：单测里注入的是自己造的 registry，
@@ -88,6 +88,25 @@ const EXPECTED_RED = [
   'r/version',
   'r/wiring',
   'sample/r',
+  'ruby/capability',
+  'ruby/crlf',
+  'ruby/flavor',
+  'ruby/host-semantics',
+  'ruby/multi-file',
+  'ruby/output-limit',
+  'ruby/path-escape',
+  'ruby/require-relative',
+  'ruby/socket',
+  'ruby/stderr',
+  'ruby/stdin',
+  'ruby/stdlib-json',
+  'ruby/stdout',
+  'ruby/syntax-error',
+  'ruby/timeout',
+  'ruby/utf8',
+  'ruby/version',
+  'ruby/wiring',
+  'sample/ruby',
 ].sort();
 
 const EXPECTED_SKIPS = ['css/infinite-loop', 'html/infinite-loop'].sort();
